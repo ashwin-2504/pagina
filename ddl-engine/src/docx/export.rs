@@ -79,6 +79,16 @@ fn generate_header_xml(doc: &Document) -> String {
                 .unwrap_or_else(|| "Document".to_string())
         });
 
+    let is_letter = doc.props.paper.size.to_lowercase() == "letter";
+    let is_landscape = doc.props.paper.orientation.to_lowercase() == "landscape";
+    let (mut w, mut _h): (u32, u32) = if is_letter { (12240, 15840) } else { (11906, 16838) };
+    if is_landscape {
+        std::mem::swap(&mut w, &mut _h);
+    }
+    let margin_mm = doc.props.paper.margin.val;
+    let margin_dxa = (margin_mm * 56.6929).round() as u32;
+    let tab_pos = w.saturating_sub(margin_dxa * 2);
+
     format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -86,15 +96,16 @@ fn generate_header_xml(doc: &Document) -> String {
   <w:p>
     <w:pPr>
       <w:pBdr>
-        <w:bottom w:val="single" w:sz="6" w:space="8" w:color="CBD5E1"/>
+        <w:bottom w:val="single" w:sz="6" w:space="10" w:color="CBD5E1"/>
       </w:pBdr>
       <w:tabs>
-        <w:tab w:val="right" w:pos="9360"/>
+        <w:tab w:val="right" w:pos="{}"/>
       </w:tabs>
+      <w:spacing w:after="160"/>
     </w:pPr>
     <w:r>
       <w:rPr>
-        <w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/>
+        <w:rFonts w:ascii="Segoe UI" w:hAnsi="Segoe UI"/>
         <w:sz w:val="18"/>
         <w:color w:val="64748B"/>
       </w:rPr>
@@ -104,7 +115,7 @@ fn generate_header_xml(doc: &Document) -> String {
     <w:fldSimple w:instr="PAGE">
       <w:r>
         <w:rPr>
-          <w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/>
+          <w:rFonts w:ascii="Segoe UI" w:hAnsi="Segoe UI"/>
           <w:sz w:val="18"/>
           <w:color w:val="64748B"/>
         </w:rPr>
@@ -113,7 +124,7 @@ fn generate_header_xml(doc: &Document) -> String {
     </w:fldSimple>
     <w:r>
       <w:rPr>
-        <w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/>
+        <w:rFonts w:ascii="Segoe UI" w:hAnsi="Segoe UI"/>
         <w:sz w:val="18"/>
         <w:color w:val="64748B"/>
       </w:rPr>
@@ -122,7 +133,7 @@ fn generate_header_xml(doc: &Document) -> String {
     <w:fldSimple w:instr="NUMPAGES">
       <w:r>
         <w:rPr>
-          <w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/>
+          <w:rFonts w:ascii="Segoe UI" w:hAnsi="Segoe UI"/>
           <w:sz w:val="18"/>
           <w:color w:val="64748B"/>
         </w:rPr>
@@ -131,6 +142,7 @@ fn generate_header_xml(doc: &Document) -> String {
     </w:fldSimple>
   </w:p>
 </w:hdr>"#,
+        tab_pos,
         escape_xml(&left_text)
     )
 }
@@ -150,12 +162,16 @@ fn generate_footer_xml(doc: &Document) -> String {
   <w:p>
     <w:pPr>
       <w:jc w:val="center"/>
+      <w:pBdr>
+        <w:top w:val="single" w:sz="6" w:space="8" w:color="E2E8F0"/>
+      </w:pBdr>
+      <w:spacing w:before="140" w:after="0"/>
     </w:pPr>
     <w:r>
       <w:rPr>
-        <w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/>
+        <w:rFonts w:ascii="Segoe UI" w:hAnsi="Segoe UI"/>
         <w:sz w:val="18"/>
-        <w:color w:val="64748B"/>
+        <w:color w:val="94A3B8"/>
       </w:rPr>
       <w:t>{}</w:t>
     </w:r>
@@ -284,7 +300,7 @@ fn convert_node(node: &Node, out: &mut String) {
 
             if is_callout {
                 out.push_str(
-                    "<w:p><w:pPr><w:pBdr><w:left w:val=\"single\" w:sz=\"24\" w:space=\"12\" w:color=\"16A34A\"/></w:pBdr><w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"F0FDF4\"/></w:pPr>",
+                    "<w:p><w:pPr><w:pBdr><w:left w:val=\"single\" w:sz=\"24\" w:space=\"12\" w:color=\"16A34A\"/></w:pBdr><w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"F0FDF4\"/><w:ind w:left=\"240\" w:right=\"180\"/><w:spacing w:before=\"180\" w:after=\"200\" w:line=\"280\" w:lineRule=\"auto\"/></w:pPr>",
                 );
                 emit_inline_runs(el, false, false, false, false, false, false, false, out);
                 out.push_str("</w:p>\n");
@@ -300,14 +316,16 @@ fn convert_node(node: &Node, out: &mut String) {
                 "h6" => emit_heading(el, "Heading6", out),
                 "p" => {
                     let mut ppr = String::new();
+                    let is_lead = el.classes.iter().any(|c| c == "lead");
+                    if is_lead {
+                        ppr.push_str("<w:rPr><w:sz w:val=\"24\"/><w:color w:val=\"475569\"/></w:rPr><w:spacing w:before=\"60\" w:after=\"180\" w:line=\"280\" w:lineRule=\"auto\"/>");
+                    } else {
+                        ppr.push_str("<w:spacing w:before=\"40\" w:after=\"140\" w:line=\"260\" w:lineRule=\"auto\"/>");
+                    }
                     if let Some(align) = get_p_align(el) {
                         ppr.push_str(&format!("<w:jc w:val=\"{}\"/>", align));
                     }
-                    if ppr.is_empty() {
-                        out.push_str("<w:p>");
-                    } else {
-                        out.push_str(&format!("<w:p><w:pPr>{}</w:pPr>", ppr));
-                    }
+                    out.push_str(&format!("<w:p><w:pPr>{}</w:pPr>", ppr));
                     emit_inline_runs(el, false, false, false, false, false, false, false, out);
                     out.push_str("</w:p>\n");
                 }
@@ -371,6 +389,13 @@ fn convert_node(node: &Node, out: &mut String) {
 
 fn emit_heading(el: &ElementNode, style: &str, out: &mut String) {
     let mut ppr = format!("<w:pStyle w:val=\"{}\"/>", style);
+    let (before, after) = match style {
+        "Heading1" => (160, 160),
+        "Heading2" => (240, 120),
+        "Heading3" => (100, 80),
+        _ => (120, 80),
+    };
+    ppr.push_str(&format!("<w:spacing w:before=\"{}\" w:after=\"{}\"/>", before, after));
     if let Some(align) = get_p_align(el) {
         ppr.push_str(&format!("<w:jc w:val=\"{}\"/>", align));
     }
@@ -683,16 +708,22 @@ const STYLES_XML: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes
 <w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   <w:style w:type="paragraph" w:default="1" w:styleId="Normal">
     <w:name w:val="Normal"/>
+    <w:pPr>
+      <w:spacing w:after="140" w:line="260" w:lineRule="auto"/>
+    </w:pPr>
     <w:rPr>
-      <w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/>
-      <w:sz w:val="22"/>
+      <w:rFonts w:ascii="Segoe UI" w:hAnsi="Segoe UI" w:cs="Segoe UI"/>
+      <w:sz w:val="21"/>
       <w:color w:val="334155"/>
     </w:rPr>
   </w:style>
   <w:style w:type="paragraph" w:styleId="Heading1">
     <w:name w:val="heading 1"/>
+    <w:pPr>
+      <w:spacing w:before="160" w:after="160"/>
+    </w:pPr>
     <w:rPr>
-      <w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/>
+      <w:rFonts w:ascii="Segoe UI" w:hAnsi="Segoe UI" w:cs="Segoe UI"/>
       <w:b/>
       <w:sz w:val="48"/>
       <w:color w:val="1E3A8A"/>
@@ -700,8 +731,11 @@ const STYLES_XML: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes
   </w:style>
   <w:style w:type="paragraph" w:styleId="Heading2">
     <w:name w:val="heading 2"/>
+    <w:pPr>
+      <w:spacing w:before="240" w:after="120"/>
+    </w:pPr>
     <w:rPr>
-      <w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/>
+      <w:rFonts w:ascii="Segoe UI" w:hAnsi="Segoe UI" w:cs="Segoe UI"/>
       <w:b/>
       <w:sz w:val="32"/>
       <w:color w:val="0F172A"/>
@@ -709,8 +743,11 @@ const STYLES_XML: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes
   </w:style>
   <w:style w:type="paragraph" w:styleId="Heading3">
     <w:name w:val="heading 3"/>
+    <w:pPr>
+      <w:spacing w:before="100" w:after="80"/>
+    </w:pPr>
     <w:rPr>
-      <w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/>
+      <w:rFonts w:ascii="Segoe UI" w:hAnsi="Segoe UI" w:cs="Segoe UI"/>
       <w:b/>
       <w:sz w:val="26"/>
       <w:color w:val="1E293B"/>
