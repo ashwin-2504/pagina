@@ -32,6 +32,15 @@ mod tests {
     use std::path::Path;
 
     #[test]
+    fn test_callout_spans() {
+        let input = r#"<doc><props></props><body><section><div class="callout"><b>Separation of Concerns:</b> Styles are linked via <code>&lt;link rel="stylesheet" href="styles.css" /&gt;</code>, allowing designers or AI agents to style documents independently.</div></section></body></doc>"#;
+        let mut p = parser::Parser::new(input);
+        let doc = p.parse().unwrap();
+        let bytes = pdf::export_pdf(&doc).unwrap();
+        assert!(!bytes.is_empty());
+    }
+
+    #[test]
     fn test_basic_parse() {
         let input = r#"
         <doc>
@@ -289,5 +298,108 @@ mod tests {
         assert!(import_res.dxml.contains("Modular Document Architecture"));
         assert!(import_res.dxml.contains("Left Column"));
         assert!(import_res.dxml.contains("Right Column"));
+    }
+
+    #[test]
+    fn test_font_bullets_indentation_margin_padding_roundtrip() {
+        let input = r#"<doc>
+  <props>
+    <meta>
+      <title>Formatting Test Suite</title>
+      <author>Typography Team</author>
+    </meta>
+    <paper size="A4" orientation="portrait" margin="15mm" />
+    <link rel="stylesheet" href="styles.css" />
+  </props>
+  <body>
+    <section>
+      <h1>Document Typography &amp; Bullets</h1>
+      <p class="lead">Testing fonts, all bullet types, blockquotes, indentations, and box padding.</p>
+
+      <blockquote>
+        <p>A designer knows he has achieved perfection not when there is nothing left to add, but when there is nothing left to take away.</p>
+      </blockquote>
+
+      <h2>Unordered Lists with All Bullet Types</h2>
+      <ul type="disc">
+        <li>Disc bullet standard item</li>
+      </ul>
+      <ul type="circle">
+        <li>Circle bullet white item</li>
+      </ul>
+      <ul type="square">
+        <li>Square bullet black item</li>
+      </ul>
+      <ul type="dash">
+        <li>Dash bullet hypenated item</li>
+      </ul>
+
+      <h2>Ordered Lists with All Counter Types</h2>
+      <ol type="1">
+        <li>Decimal numbered item</li>
+      </ol>
+      <ol type="a">
+        <li>Lower alpha item</li>
+      </ol>
+      <ol type="A">
+        <li>Upper alpha item</li>
+      </ol>
+      <ol type="i">
+        <li>Lower roman numeral item</li>
+      </ol>
+      <ol type="I">
+        <li>Upper roman numeral item</li>
+      </ol>
+
+      <div class="callout">
+        <b>Callout Box:</b> Padding and rounded corners tested.
+      </div>
+
+      <grid cols="1fr 1fr" gap="5mm">
+        <div class="col-box">
+          <p>Box 1 with 4mm padding and rounded borders.</p>
+        </div>
+        <div class="col-box">
+          <p>Box 2 with 4mm padding and rounded borders.</p>
+        </div>
+      </grid>
+    </section>
+  </body>
+</doc>"#;
+
+        let mut parser = parser::Parser::new(input);
+        let doc = parser.parse().expect("Document should parse successfully");
+
+        // 1. PDF Export
+        let pdf_bytes = pdf::export_pdf(&doc).expect("PDF export with all bullet types and formatting must succeed");
+        assert_eq!(&pdf_bytes[0..4], b"%PDF");
+
+        // 2. DOCX Export
+        let docx_bytes = docx::export_docx(&doc).expect("DOCX export with all formatting must succeed");
+        assert_eq!(&docx_bytes[0..2], b"PK");
+
+        // 3. Inspect Word XML to verify bullet symbols and indentations
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&docx_bytes)).expect("Must be valid zip archive");
+        let mut doc_xml = String::new();
+        archive.by_name("word/document.xml").unwrap().read_to_string(&mut doc_xml).unwrap();
+
+        assert!(doc_xml.contains("•"), "Must contain disc bullet");
+        assert!(doc_xml.contains("◦"), "Must contain circle bullet");
+        assert!(doc_xml.contains("▪"), "Must contain square bullet");
+        assert!(doc_xml.contains("–"), "Must contain dash bullet");
+        assert!(doc_xml.contains("a."), "Must contain lower-alpha counter");
+        assert!(doc_xml.contains("A."), "Must contain upper-alpha counter");
+        assert!(doc_xml.contains("i."), "Must contain lower-roman counter");
+        assert!(doc_xml.contains("I."), "Must contain upper-roman counter");
+        assert!(doc_xml.contains("w:ind"), "Must contain indentation tags");
+
+        // 4. DOCX Import Roundtrip
+        let imported = docx::import_docx(&docx_bytes).expect("DOCX import must succeed");
+        assert!(imported.dxml.contains("Document Typography"));
+        assert!(imported.dxml.contains("<ul"), "Imported DXML must contain ul");
+        assert!(imported.dxml.contains("<ol"), "Imported DXML must contain ol");
+        assert!(imported.dcss.contains("body"), "Imported DCSS must contain typography");
+        assert!(imported.dcss.contains(".callout"), "Imported DCSS must contain callout padding");
+        assert!(imported.dcss.contains(".col-box"), "Imported DCSS must contain col-box padding");
     }
 }

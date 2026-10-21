@@ -23,7 +23,8 @@ pub fn export_docx(doc: &Document) -> Result<Vec<u8>, Box<dyn std::error::Error 
 
     // 4. word/styles.xml
     zip.start_file("word/styles.xml", options)?;
-    zip.write_all(STYLES_XML.as_bytes())?;
+    let styles_xml = generate_styles_xml(doc);
+    zip.write_all(styles_xml.as_bytes())?;
 
     // 5. word/header1.xml
     zip.start_file("word/header1.xml", options)?;
@@ -277,7 +278,58 @@ fn is_inline_node(node: &Node) -> bool {
     }
 }
 
+fn to_lower_alpha(mut n: usize) -> String {
+    if n == 0 {
+        return "a".to_string();
+    }
+    let mut s = String::new();
+    while n > 0 {
+        n -= 1;
+        let rem = (n % 26) as u8;
+        s.insert(0, (b'a' + rem) as char);
+        n /= 26;
+    }
+    s
+}
+
+fn to_upper_alpha(n: usize) -> String {
+    to_lower_alpha(n).to_uppercase()
+}
+
+fn to_roman(mut n: usize) -> String {
+    if n == 0 {
+        return "i".to_string();
+    }
+    let table = [
+        (1000, "m"),
+        (900, "cm"),
+        (500, "d"),
+        (400, "cd"),
+        (100, "c"),
+        (90, "xc"),
+        (50, "l"),
+        (40, "xl"),
+        (10, "x"),
+        (9, "ix"),
+        (5, "v"),
+        (4, "iv"),
+        (1, "i"),
+    ];
+    let mut res = String::new();
+    for &(val, sym) in &table {
+        while n >= val {
+            res.push_str(sym);
+            n -= val;
+        }
+    }
+    res
+}
+
 fn convert_node(node: &Node, out: &mut String) {
+    convert_node_with_indent(node, 0, out);
+}
+
+fn convert_node_with_indent(node: &Node, indent_level: usize, out: &mut String) {
     match node {
         Node::Text(t) => {
             let trimmed = t.content.trim();
@@ -291,7 +343,7 @@ fn convert_node(node: &Node, out: &mut String) {
         Node::Comment(_) => {}
         Node::Section(sec) => {
             for child in &sec.children {
-                convert_node(child, out);
+                convert_node_with_indent(child, indent_level, out);
             }
         }
         Node::Element(el) => {
@@ -325,28 +377,105 @@ fn convert_node(node: &Node, out: &mut String) {
                     if let Some(align) = get_p_align(el) {
                         ppr.push_str(&format!("<w:jc w:val=\"{}\"/>", align));
                     }
+                    if indent_level > 0 {
+                        let ind = (indent_level as u32) * 480;
+                        ppr.push_str(&format!("<w:ind w:left=\"{}\"/>", ind));
+                    }
                     out.push_str(&format!("<w:p><w:pPr>{}</w:pPr>", ppr));
                     emit_inline_runs(el, false, false, false, false, false, false, false, out);
                     out.push_str("</w:p>\n");
                 }
+                "blockquote" => {
+                    out.push_str(
+                        "<w:p><w:pPr><w:pBdr><w:left w:val=\"single\" w:sz=\"18\" w:space=\"12\" w:color=\"CBD5E1\"/></w:pBdr><w:ind w:left=\"720\"/><w:spacing w:before=\"120\" w:after=\"160\" w:line=\"260\" w:lineRule=\"auto\"/></w:pPr>",
+                    );
+                    emit_inline_runs(el, false, true, false, false, false, false, false, out);
+                    out.push_str("</w:p>\n");
+                }
                 "ul" => {
+                    let list_type = el
+                        .attributes
+                        .get("type")
+                        .map(|s| s.as_str())
+                        .or_else(|| el.inline_styles.get("list-style-type").map(|s| s.as_str()))
+                        .unwrap_or("disc");
+                    let bullet_sym = match list_type {
+                        "circle" => "◦",
+                        "square" => "▪",
+                        "dash" => "–",
+                        _ => "•",
+                    };
+                    let indent_dxa = (indent_level as u32) * 480 + 720;
                     for li in &el.children {
                         if let Node::Element(li_el) = li {
                             if li_el.tag.to_lowercase() == "li" {
-                                out.push_str("<w:p><w:pPr><w:pStyle w:val=\"ListBullet\"/></w:pPr>");
+                                out.push_str(&format!(
+                                    "<w:p><w:pPr><w:pStyle w:val=\"ListBullet\"/><w:ind w:left=\"{}\" w:hanging=\"360\"/><w:spacing w:after=\"60\" w:line=\"260\" w:lineRule=\"auto\"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t xml:space=\"preserve\">{} </w:t></w:r>",
+                                    indent_dxa, bullet_sym
+                                ));
                                 emit_inline_runs(li_el, false, false, false, false, false, false, false, out);
                                 out.push_str("</w:p>\n");
+
+                                for li_child in &li_el.children {
+                                    if let Node::Element(nested_list) = li_child {
+                                        let tag_lower = nested_list.tag.to_lowercase();
+                                        if tag_lower == "ul" || tag_lower == "ol" {
+                                            convert_node_with_indent(
+                                                &Node::Element(nested_list.clone()),
+                                                indent_level + 1,
+                                                out,
+                                            );
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
                 }
                 "ol" => {
+                    let num_type = el
+                        .attributes
+                        .get("type")
+                        .map(|s| s.as_str())
+                        .or_else(|| el.inline_styles.get("list-style-type").map(|s| s.as_str()))
+                        .unwrap_or("1");
+                    let start_idx = el
+                        .attributes
+                        .get("start")
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .unwrap_or(1);
+                    let indent_dxa = (indent_level as u32) * 480 + 720;
+                    let mut item_idx = 0;
                     for li in &el.children {
                         if let Node::Element(li_el) = li {
                             if li_el.tag.to_lowercase() == "li" {
-                                out.push_str("<w:p><w:pPr><w:pStyle w:val=\"ListNumber\"/></w:pPr>");
+                                let num_str = match num_type {
+                                    "a" | "lower-alpha" => format!("{}.", to_lower_alpha(start_idx + item_idx)),
+                                    "A" | "upper-alpha" => format!("{}.", to_upper_alpha(start_idx + item_idx)),
+                                    "i" | "lower-roman" => format!("{}.", to_roman(start_idx + item_idx)),
+                                    "I" | "upper-roman" => format!("{}.", to_roman(start_idx + item_idx).to_uppercase()),
+                                    _ => format!("{}.", start_idx + item_idx),
+                                };
+                                item_idx += 1;
+                                out.push_str(&format!(
+                                    "<w:p><w:pPr><w:pStyle w:val=\"ListNumber\"/><w:ind w:left=\"{}\" w:hanging=\"360\"/><w:spacing w:after=\"60\" w:line=\"260\" w:lineRule=\"auto\"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t xml:space=\"preserve\">{} </w:t></w:r>",
+                                    indent_dxa, num_str
+                                ));
                                 emit_inline_runs(li_el, false, false, false, false, false, false, false, out);
                                 out.push_str("</w:p>\n");
+
+                                for li_child in &li_el.children {
+                                    if let Node::Element(nested_list) = li_child {
+                                        let tag_lower = nested_list.tag.to_lowercase();
+                                        if tag_lower == "ul" || tag_lower == "ol" {
+                                            convert_node_with_indent(
+                                                &Node::Element(nested_list.clone()),
+                                                indent_level + 1,
+                                                out,
+                                            );
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -363,8 +492,6 @@ fn convert_node(node: &Node, out: &mut String) {
                     );
                 }
                 _ => {
-                    // Container element like div, col-box, etc.
-                    // If all non-empty children are inline elements, render as a single cohesive paragraph!
                     let has_only_inlines = el.children.iter().all(|c| match c {
                         Node::Comment(_) => true,
                         Node::Text(_) => true,
@@ -378,7 +505,7 @@ fn convert_node(node: &Node, out: &mut String) {
                         out.push_str("</w:p>\n");
                     } else {
                         for child in &el.children {
-                            convert_node(child, out);
+                            convert_node_with_indent(child, indent_level, out);
                         }
                     }
                 }
@@ -644,6 +771,15 @@ fn emit_table(el: &ElementNode, out: &mut String) {
                     let is_header = cell_tag == "th";
                     out.push_str("    <w:tc>\n");
                     out.push_str("      <w:tcPr>\n");
+                    out.push_str(
+                        r#"        <w:tcMar>
+          <w:top w:w="140" w:type="dxa"/>
+          <w:left w:w="180" w:type="dxa"/>
+          <w:bottom w:w="140" w:type="dxa"/>
+          <w:right w:w="180" w:type="dxa"/>
+        </w:tcMar>
+"#,
+                    );
                     if is_header {
                         out.push_str("        <w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"F8FAFC\"/>\n");
                     }
@@ -682,6 +818,83 @@ fn escape_xml(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+fn detect_doc_font_family(doc: &Document) -> &'static str {
+    for rule in &doc.props.stylesheet.rules {
+        if rule.selectors.iter().any(|s| s == "body") {
+            if let Some(ff) = rule.declarations.get("font-family") {
+                let ffl = ff.to_lowercase();
+                if ffl.contains("times") || ffl.contains("serif") || ffl.contains("georgia") {
+                    return "Times New Roman";
+                }
+                if ffl.contains("arial") || ffl.contains("helvetica") {
+                    return "Arial";
+                }
+                if ffl.contains("calibri") {
+                    return "Calibri";
+                }
+            }
+        }
+    }
+    "Segoe UI"
+}
+
+fn generate_styles_xml(doc: &Document) -> String {
+    let font_name = detect_doc_font_family(doc);
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="paragraph" w:default="1" w:styleId="Normal">
+    <w:name w:val="Normal"/>
+    <w:pPr>
+      <w:spacing w:after="140" w:line="260" w:lineRule="auto"/>
+    </w:pPr>
+    <w:rPr>
+      <w:rFonts w:ascii="{font}" w:hAnsi="{font}" w:cs="{font}"/>
+      <w:sz w:val="21"/>
+      <w:color w:val="334155"/>
+    </w:rPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Heading1">
+    <w:name w:val="heading 1"/>
+    <w:pPr>
+      <w:spacing w:before="160" w:after="160"/>
+    </w:pPr>
+    <w:rPr>
+      <w:rFonts w:ascii="{font}" w:hAnsi="{font}" w:cs="{font}"/>
+      <w:b/>
+      <w:sz w:val="48"/>
+      <w:color w:val="1E3A8A"/>
+    </w:rPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Heading2">
+    <w:name w:val="heading 2"/>
+    <w:pPr>
+      <w:spacing w:before="240" w:after="120"/>
+    </w:pPr>
+    <w:rPr>
+      <w:rFonts w:ascii="{font}" w:hAnsi="{font}" w:cs="{font}"/>
+      <w:b/>
+      <w:sz w:val="32"/>
+      <w:color w:val="0F172A"/>
+    </w:rPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Heading3">
+    <w:name w:val="heading 3"/>
+    <w:pPr>
+      <w:spacing w:before="100" w:after="80"/>
+    </w:pPr>
+    <w:rPr>
+      <w:rFonts w:ascii="{font}" w:hAnsi="{font}" w:cs="{font}"/>
+      <w:b/>
+      <w:sz w:val="26"/>
+      <w:color w:val="1E293B"/>
+    </w:rPr>
+  </w:style>
+</w:styles>"#,
+        font = font_name
+    )
+}
+
 const CONTENT_TYPES_XML: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
@@ -703,54 +916,3 @@ const WORD_RELS_XML: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="
   <Relationship Id="rIdH1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>
   <Relationship Id="rIdF1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>
 </Relationships>"#;
-
-const STYLES_XML: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-  <w:style w:type="paragraph" w:default="1" w:styleId="Normal">
-    <w:name w:val="Normal"/>
-    <w:pPr>
-      <w:spacing w:after="140" w:line="260" w:lineRule="auto"/>
-    </w:pPr>
-    <w:rPr>
-      <w:rFonts w:ascii="Segoe UI" w:hAnsi="Segoe UI" w:cs="Segoe UI"/>
-      <w:sz w:val="21"/>
-      <w:color w:val="334155"/>
-    </w:rPr>
-  </w:style>
-  <w:style w:type="paragraph" w:styleId="Heading1">
-    <w:name w:val="heading 1"/>
-    <w:pPr>
-      <w:spacing w:before="160" w:after="160"/>
-    </w:pPr>
-    <w:rPr>
-      <w:rFonts w:ascii="Segoe UI" w:hAnsi="Segoe UI" w:cs="Segoe UI"/>
-      <w:b/>
-      <w:sz w:val="48"/>
-      <w:color w:val="1E3A8A"/>
-    </w:rPr>
-  </w:style>
-  <w:style w:type="paragraph" w:styleId="Heading2">
-    <w:name w:val="heading 2"/>
-    <w:pPr>
-      <w:spacing w:before="240" w:after="120"/>
-    </w:pPr>
-    <w:rPr>
-      <w:rFonts w:ascii="Segoe UI" w:hAnsi="Segoe UI" w:cs="Segoe UI"/>
-      <w:b/>
-      <w:sz w:val="32"/>
-      <w:color w:val="0F172A"/>
-    </w:rPr>
-  </w:style>
-  <w:style w:type="paragraph" w:styleId="Heading3">
-    <w:name w:val="heading 3"/>
-    <w:pPr>
-      <w:spacing w:before="100" w:after="80"/>
-    </w:pPr>
-    <w:rPr>
-      <w:rFonts w:ascii="Segoe UI" w:hAnsi="Segoe UI" w:cs="Segoe UI"/>
-      <w:b/>
-      <w:sz w:val="26"/>
-      <w:color w:val="1E293B"/>
-    </w:rPr>
-  </w:style>
-</w:styles>"#;

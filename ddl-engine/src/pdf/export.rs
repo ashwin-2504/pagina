@@ -1,22 +1,66 @@
 use crate::ast::{Document, ElementNode, Node, PageStyle};
-use printpdf::path::PaintMode;
+use printpdf::path::{PaintMode, WindingOrder};
 use printpdf::*;
 use std::io::Cursor;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FontFamily {
+    SansSerif,
+    Serif,
+    Monospace,
+}
+
+#[derive(Clone, Copy)]
+pub struct FontSet<'a> {
+    pub helvetica_reg: &'a IndirectFontRef,
+    pub helvetica_bold: &'a IndirectFontRef,
+    pub helvetica_italic: &'a IndirectFontRef,
+    pub times_reg: &'a IndirectFontRef,
+    pub times_bold: &'a IndirectFontRef,
+    pub times_italic: &'a IndirectFontRef,
+    pub courier: &'a IndirectFontRef,
+}
+
+impl<'a> FontSet<'a> {
+    pub fn select(&self, family: FontFamily, bold: bool, italic: bool) -> &'a IndirectFontRef {
+        match family {
+            FontFamily::Monospace => self.courier,
+            FontFamily::Serif => {
+                if bold {
+                    self.times_bold
+                } else if italic {
+                    self.times_italic
+                } else {
+                    self.times_reg
+                }
+            }
+            FontFamily::SansSerif => {
+                if bold {
+                    self.helvetica_bold
+                } else if italic {
+                    self.helvetica_italic
+                } else {
+                    self.helvetica_reg
+                }
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 struct StyledRun {
     text: String,
+    family: FontFamily,
     bold: bool,
     italic: bool,
-    code: bool,
 }
 
 #[derive(Debug, Clone)]
 struct ParagraphWord {
     text: String,
+    family: FontFamily,
     bold: bool,
     italic: bool,
-    code: bool,
     has_trailing_space: bool,
     width_mm: f32,
 }
@@ -24,9 +68,9 @@ struct ParagraphWord {
 #[derive(Debug, Clone)]
 struct LineSpan {
     text: String,
+    family: FontFamily,
     bold: bool,
     italic: bool,
-    code: bool,
     font_size: f32,
     width_mm: f32,
 }
@@ -57,12 +101,25 @@ pub fn export_pdf(doc: &Document) -> Result<Vec<u8>, Box<dyn std::error::Error +
     let font_bold = pdf_doc.add_builtin_font(BuiltinFont::HelveticaBold)?;
     let font_italic = pdf_doc.add_builtin_font(BuiltinFont::HelveticaOblique)?;
     let font_code = pdf_doc.add_builtin_font(BuiltinFont::Courier)?;
+    let font_times_reg = pdf_doc.add_builtin_font(BuiltinFont::TimesRoman)?;
+    let font_times_bold = pdf_doc.add_builtin_font(BuiltinFont::TimesBold)?;
+    let font_times_italic = pdf_doc.add_builtin_font(BuiltinFont::TimesItalic)?;
+
+    let fonts = FontSet {
+        helvetica_reg: &font_regular,
+        helvetica_bold: &font_bold,
+        helvetica_italic: &font_italic,
+        times_reg: &font_times_reg,
+        times_bold: &font_times_bold,
+        times_italic: &font_times_italic,
+        courier: &font_code,
+    };
 
     let mut current_page = first_page;
     let mut current_layer = pdf_doc.get_page(current_page).get_layer(first_layer);
     let mut page_count = 1;
 
-    // Dynamic margin from document props
+    // Dynamic margins from document props
     let margin_mm = doc.props.paper.margin.val;
     let left_margin = margin_mm.max(12.0);
     let right_margin = margin_mm.max(12.0);
@@ -78,7 +135,7 @@ pub fn export_pdf(doc: &Document) -> Result<Vec<u8>, Box<dyn std::error::Error +
         content_width,
         width_mm,
         height_mm,
-        &font_regular,
+        fonts.helvetica_reg,
         doc,
     );
 
@@ -98,10 +155,8 @@ pub fn export_pdf(doc: &Document) -> Result<Vec<u8>, Box<dyn std::error::Error +
         top_margin,
         bottom_margin,
         width_mm,
-        &font_regular,
-        &font_bold,
-        &font_italic,
-        &font_code,
+        &fonts,
+        0,
         doc,
     );
 
@@ -211,6 +266,52 @@ fn draw_running_header_footer(
     )));
 }
 
+fn draw_rounded_rect(
+    layer: &PdfLayerReference,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    radius: f32,
+    mode: PaintMode,
+) {
+    let r = radius.min(w / 2.0).min(h / 2.0);
+    if r <= 0.05 {
+        let mut rect = Rect::new(Mm(x), Mm(y), Mm(x + w), Mm(y + h));
+        rect.mode = mode;
+        layer.add_rect(rect);
+        return;
+    }
+
+    let k = 0.55228475 * r;
+    let ring: Vec<(Point, bool)> = vec![
+        (Point::new(Mm(x + r), Mm(y)), false),
+        (Point::new(Mm(x + w - r), Mm(y)), false),
+        (Point::new(Mm(x + w - r + k), Mm(y)), true),
+        (Point::new(Mm(x + w), Mm(y + r - k)), true),
+        (Point::new(Mm(x + w), Mm(y + r)), false),
+        (Point::new(Mm(x + w), Mm(y + h - r)), false),
+        (Point::new(Mm(x + w), Mm(y + h - r + k)), true),
+        (Point::new(Mm(x + w - r + k), Mm(y + h)), true),
+        (Point::new(Mm(x + w - r), Mm(y + h)), false),
+        (Point::new(Mm(x + r), Mm(y + h)), false),
+        (Point::new(Mm(x + r - k), Mm(y + h)), true),
+        (Point::new(Mm(x), Mm(y + h - r + k)), true),
+        (Point::new(Mm(x), Mm(y + h - r)), false),
+        (Point::new(Mm(x), Mm(y + r)), false),
+        (Point::new(Mm(x), Mm(y + r - k)), true),
+        (Point::new(Mm(x + r - k), Mm(y)), true),
+        (Point::new(Mm(x + r), Mm(y)), false),
+    ];
+
+    let poly = Polygon {
+        rings: vec![ring],
+        mode,
+        winding_order: WindingOrder::NonZero,
+    };
+    layer.add_polygon(poly);
+}
+
 fn get_align(el: &ElementNode) -> Option<&'static str> {
     if let Some(a) = el.attributes.get("align") {
         if a.eq_ignore_ascii_case("center") {
@@ -235,41 +336,139 @@ fn get_align(el: &ElementNode) -> Option<&'static str> {
     None
 }
 
-fn collect_styled_runs(node: &Node, bold: bool, italic: bool, code: bool, runs: &mut Vec<StyledRun>) {
+fn detect_font_family(el: &ElementNode, doc: &Document) -> FontFamily {
+    if let Some(ff) = el.inline_styles.get("font-family") {
+        let ffl = ff.to_lowercase();
+        if ffl.contains("serif") || ffl.contains("times") || ffl.contains("georgia") {
+            return FontFamily::Serif;
+        }
+        if ffl.contains("mono") || ffl.contains("consolas") || ffl.contains("courier") {
+            return FontFamily::Monospace;
+        }
+    }
+    for rule in &doc.props.stylesheet.rules {
+        if rule.selectors.iter().any(|s| s == "body" || s == &el.tag) {
+            if let Some(ff) = rule.declarations.get("font-family") {
+                let ffl = ff.to_lowercase();
+                if ffl.contains("serif") || ffl.contains("times") || ffl.contains("georgia") {
+                    return FontFamily::Serif;
+                }
+                if ffl.contains("mono") || ffl.contains("consolas") || ffl.contains("courier") {
+                    return FontFamily::Monospace;
+                }
+            }
+        }
+    }
+    FontFamily::SansSerif
+}
+
+fn collect_styled_runs(
+    node: &Node,
+    family: FontFamily,
+    bold: bool,
+    italic: bool,
+    runs: &mut Vec<StyledRun>,
+) {
     match node {
         Node::Text(t) => {
             runs.push(StyledRun {
                 text: t.content.clone(),
+                family,
                 bold,
                 italic,
-                code,
             });
         }
         Node::Element(el) => {
             let tag = el.tag.to_lowercase();
             let mut b = bold;
             let mut i = italic;
-            let mut c = code;
+            let mut f = family;
             if tag == "b" || tag == "strong" {
                 b = true;
             } else if tag == "i" || tag == "em" {
                 i = true;
             } else if tag == "code" {
-                c = true;
+                f = FontFamily::Monospace;
             } else if tag == "br" {
                 runs.push(StyledRun {
                     text: "\n".to_string(),
+                    family: f,
                     bold: b,
                     italic: i,
-                    code: c,
                 });
                 return;
             }
             for child in &el.children {
-                collect_styled_runs(child, b, i, c, runs);
+                collect_styled_runs(child, f, b, i, runs);
             }
         }
         _ => {}
+    }
+}
+
+fn to_lower_alpha(mut n: usize) -> String {
+    if n == 0 {
+        return "a".to_string();
+    }
+    let mut s = String::new();
+    while n > 0 {
+        n -= 1;
+        let rem = (n % 26) as u8;
+        s.insert(0, (b'a' + rem) as char);
+        n /= 26;
+    }
+    s
+}
+
+fn to_upper_alpha(n: usize) -> String {
+    to_lower_alpha(n).to_uppercase()
+}
+
+fn to_roman(mut n: usize) -> String {
+    if n == 0 {
+        return "i".to_string();
+    }
+    let table = [
+        (1000, "m"),
+        (900, "cm"),
+        (500, "d"),
+        (400, "cd"),
+        (100, "c"),
+        (90, "xc"),
+        (50, "l"),
+        (40, "xl"),
+        (10, "x"),
+        (9, "ix"),
+        (5, "v"),
+        (4, "iv"),
+        (1, "i"),
+    ];
+    let mut res = String::new();
+    for &(val, sym) in &table {
+        while n >= val {
+            res.push_str(sym);
+            n -= val;
+        }
+    }
+    res
+}
+
+fn format_list_bullet(tag: &str, list_type: Option<&str>, idx: usize) -> String {
+    if tag == "ul" {
+        match list_type.unwrap_or("disc") {
+            "circle" => "◦ ".to_string(),
+            "square" => "▪ ".to_string(),
+            "dash" => "- ".to_string(),
+            _ => "• ".to_string(),
+        }
+    } else {
+        match list_type.unwrap_or("1") {
+            "a" | "lower-alpha" => format!("{}. ", to_lower_alpha(idx)),
+            "A" | "upper-alpha" => format!("{}. ", to_upper_alpha(idx)),
+            "i" | "lower-roman" => format!("{}. ", to_roman(idx)),
+            "I" | "upper-roman" => format!("{}. ", to_roman(idx).to_uppercase()),
+            _ => format!("{}. ", idx),
+        }
     }
 }
 
@@ -286,10 +485,8 @@ fn render_doc_nodes(
     top_margin: f32,
     bottom_margin: f32,
     width_mm: f32,
-    font_reg: &IndirectFontRef,
-    font_bold: &IndirectFontRef,
-    font_italic: &IndirectFontRef,
-    font_code: &IndirectFontRef,
+    fonts: &FontSet,
+    indent_level: usize,
     doc: &Document,
 ) {
     for node in nodes {
@@ -299,9 +496,9 @@ fn render_doc_nodes(
                 if !trimmed.is_empty() {
                     let run = StyledRun {
                         text: trimmed.to_string(),
+                        family: FontFamily::SansSerif,
                         bold: false,
                         italic: false,
-                        code: false,
                     };
                     render_styled_paragraph(
                         &[run],
@@ -320,10 +517,7 @@ fn render_doc_nodes(
                         top_margin,
                         bottom_margin,
                         width_mm,
-                        font_reg,
-                        font_bold,
-                        font_italic,
-                        font_code,
+                        fonts,
                         doc,
                     );
                 }
@@ -343,10 +537,8 @@ fn render_doc_nodes(
                     top_margin,
                     bottom_margin,
                     width_mm,
-                    font_reg,
-                    font_bold,
-                    font_italic,
-                    font_code,
+                    fonts,
+                    indent_level,
                     doc,
                 );
             }
@@ -354,13 +546,14 @@ fn render_doc_nodes(
                 let tag = el.tag.to_lowercase();
                 let align = get_align(el);
                 let is_callout = tag == "callout" || el.classes.iter().any(|c| c == "callout");
+                let el_font_family = detect_font_family(el, doc);
 
                 if is_callout {
                     let mut runs = Vec::new();
                     for child in &el.children {
-                        collect_styled_runs(child, false, false, false, &mut runs);
+                        collect_styled_runs(child, el_font_family, false, false, &mut runs);
                     }
-                    *cursor_y -= 2.0;
+                    *cursor_y -= 4.0;
                     render_styled_paragraph(
                         &runs,
                         10.0,
@@ -378,26 +571,23 @@ fn render_doc_nodes(
                         top_margin,
                         bottom_margin,
                         width_mm,
-                        font_reg,
-                        font_bold,
-                        font_italic,
-                        font_code,
+                        fonts,
                         doc,
                     );
-                    *cursor_y -= 4.0;
+                    *cursor_y -= 5.0;
                     continue;
                 }
 
                 match tag.as_str() {
                     "h1" => {
                         let text = extract_plain_text(el);
-                        *cursor_y -= 3.0;
+                        *cursor_y -= 6.0;
                         render_heading(
                             &text,
-                            22.0,
+                            24.0,
                             align,
-                            Some((30.0 / 255.0, 58.0 / 255.0, 138.0 / 255.0)), // #1e3a8a Dark Blue
-                            font_bold,
+                            Some((30.0 / 255.0, 58.0 / 255.0, 138.0 / 255.0)), // #1e3a8a
+                            fonts.select(el_font_family, true, false),
                             pdf_doc,
                             current_page,
                             current_layer,
@@ -409,20 +599,20 @@ fn render_doc_nodes(
                             top_margin,
                             bottom_margin,
                             width_mm,
-                            font_reg,
+                            fonts.helvetica_reg,
                             doc,
                         );
                         *cursor_y -= 4.0;
                     }
                     "h2" => {
                         let text = extract_plain_text(el);
-                        *cursor_y -= 4.0;
+                        *cursor_y -= 6.0;
                         render_heading(
                             &text,
                             15.0,
                             align,
                             Some((15.0 / 255.0, 23.0 / 255.0, 42.0 / 255.0)), // #0f172a
-                            font_bold,
+                            fonts.select(el_font_family, true, false),
                             pdf_doc,
                             current_page,
                             current_layer,
@@ -434,20 +624,20 @@ fn render_doc_nodes(
                             top_margin,
                             bottom_margin,
                             width_mm,
-                            font_reg,
+                            fonts.helvetica_reg,
                             doc,
                         );
                         *cursor_y -= 3.0;
                     }
                     "h3" => {
                         let text = extract_plain_text(el);
-                        *cursor_y -= 2.0;
+                        *cursor_y -= 4.0;
                         render_heading(
                             &text,
                             11.5,
                             align,
                             Some((30.0 / 255.0, 41.0 / 255.0, 59.0 / 255.0)), // #1e293b
-                            font_bold,
+                            fonts.select(el_font_family, true, false),
                             pdf_doc,
                             current_page,
                             current_layer,
@@ -459,14 +649,14 @@ fn render_doc_nodes(
                             top_margin,
                             bottom_margin,
                             width_mm,
-                            font_reg,
+                            fonts.helvetica_reg,
                             doc,
                         );
                         *cursor_y -= 2.0;
                     }
                     "p" => {
                         let is_lead = el.classes.iter().any(|c| c == "lead");
-                        let p_font_size = if is_lead { 11.5 } else { 10.5 };
+                        let p_font_size = if is_lead { 12.0 } else { 10.5 };
                         let p_color = if is_lead {
                             Some((71.0 / 255.0, 85.0 / 255.0, 105.0 / 255.0)) // #475569
                         } else {
@@ -475,7 +665,7 @@ fn render_doc_nodes(
 
                         let mut runs = Vec::new();
                         for child in &el.children {
-                            collect_styled_runs(child, false, false, false, &mut runs);
+                            collect_styled_runs(child, el_font_family, false, false, &mut runs);
                         }
                         render_styled_paragraph(
                             &runs,
@@ -494,12 +684,56 @@ fn render_doc_nodes(
                             top_margin,
                             bottom_margin,
                             width_mm,
-                            font_reg,
-                            font_bold,
-                            font_italic,
-                            font_code,
+                            fonts,
                             doc,
                         );
+                        *cursor_y -= 3.5;
+                    }
+                    "blockquote" => {
+                        *cursor_y -= 3.0;
+                        let bq_start_y = *cursor_y;
+                        let mut runs = Vec::new();
+                        for child in &el.children {
+                            collect_styled_runs(child, el_font_family, false, true, &mut runs);
+                        }
+                        let bq_indent = 7.0;
+                        let bq_color = Some((71.0 / 255.0, 85.0 / 255.0, 105.0 / 255.0));
+                        render_styled_paragraph(
+                            &runs,
+                            10.0,
+                            None,
+                            bq_color,
+                            false,
+                            pdf_doc,
+                            current_page,
+                            current_layer,
+                            page_count,
+                            cursor_y,
+                            left_margin + bq_indent,
+                            content_width - bq_indent,
+                            height_mm,
+                            top_margin,
+                            bottom_margin,
+                            width_mm,
+                            fonts,
+                            doc,
+                        );
+                        let bq_end_y = *cursor_y + 1.0;
+                        current_layer.set_outline_color(Color::Rgb(Rgb::new(
+                            203.0 / 255.0,
+                            213.0 / 255.0,
+                            225.0 / 255.0,
+                            None,
+                        )));
+                        current_layer.set_outline_thickness(1.2);
+                        let bar_line = Line {
+                            points: vec![
+                                (Point::new(Mm(left_margin + 2.0), Mm(bq_end_y)), false),
+                                (Point::new(Mm(left_margin + 2.0), Mm(bq_start_y)), false),
+                            ],
+                            is_closed: false,
+                        };
+                        current_layer.add_line(bar_line);
                         *cursor_y -= 3.5;
                     }
                     "grid" => {
@@ -516,32 +750,51 @@ fn render_doc_nodes(
                             top_margin,
                             bottom_margin,
                             width_mm,
-                            font_reg,
-                            font_bold,
-                            font_italic,
-                            font_code,
+                            fonts,
                             doc,
                         );
                     }
                     "ul" | "ol" => {
-                        for (idx, child) in el.children.iter().enumerate() {
+                        let list_type_attr = el.attributes.get("type").map(|s| s.as_str());
+                        let list_style = el
+                            .inline_styles
+                            .get("list-style-type")
+                            .map(|s| s.as_str())
+                            .or(list_type_attr);
+                        let start_idx = el
+                            .attributes
+                            .get("start")
+                            .and_then(|s| s.parse::<usize>().ok())
+                            .unwrap_or(1);
+
+                        *cursor_y -= 2.0;
+                        let mut item_idx = 0;
+                        for child in &el.children {
                             if let Node::Element(li) = child {
                                 if li.tag.to_lowercase() == "li" {
+                                    let bullet = format_list_bullet(
+                                        &tag,
+                                        list_style,
+                                        start_idx + item_idx,
+                                    );
+                                    item_idx += 1;
                                     let mut runs = Vec::new();
-                                    let bullet = if tag == "ul" {
-                                        "- ".to_string()
-                                    } else {
-                                        format!("{}. ", idx + 1)
-                                    };
                                     runs.push(StyledRun {
                                         text: bullet,
+                                        family: FontFamily::SansSerif,
                                         bold: true,
                                         italic: false,
-                                        code: false,
                                     });
                                     for li_child in &li.children {
-                                        collect_styled_runs(li_child, false, false, false, &mut runs);
+                                        collect_styled_runs(
+                                            li_child,
+                                            el_font_family,
+                                            false,
+                                            false,
+                                            &mut runs,
+                                        );
                                     }
+                                    let indent_offset = (indent_level as f32) * 6.0 + 5.0;
                                     render_styled_paragraph(
                                         &runs,
                                         10.5,
@@ -553,23 +806,20 @@ fn render_doc_nodes(
                                         current_layer,
                                         page_count,
                                         cursor_y,
-                                        left_margin + 5.0,
-                                        content_width - 5.0,
+                                        left_margin + indent_offset,
+                                        content_width - indent_offset,
                                         height_mm,
                                         top_margin,
                                         bottom_margin,
                                         width_mm,
-                                        font_reg,
-                                        font_bold,
-                                        font_italic,
-                                        font_code,
+                                        fonts,
                                         doc,
                                     );
-                                    *cursor_y -= 1.5;
+                                    *cursor_y -= 2.0;
                                 }
                             }
                         }
-                        *cursor_y -= 2.0;
+                        *cursor_y -= 2.5;
                     }
                     "table" => {
                         render_table(
@@ -585,13 +835,19 @@ fn render_doc_nodes(
                             top_margin,
                             bottom_margin,
                             width_mm,
-                            font_reg,
-                            font_bold,
+                            fonts,
                             doc,
                         );
                     }
                     "hr" => {
                         *cursor_y -= 3.0;
+                        current_layer.set_outline_color(Color::Rgb(Rgb::new(
+                            203.0 / 255.0,
+                            213.0 / 255.0,
+                            225.0 / 255.0,
+                            None,
+                        )));
+                        current_layer.set_outline_thickness(0.6);
                         let points = vec![
                             (Point::new(Mm(left_margin), Mm(*cursor_y)), false),
                             (Point::new(Mm(left_margin + content_width), Mm(*cursor_y)), false),
@@ -604,7 +860,7 @@ fn render_doc_nodes(
                         *cursor_y -= 4.0;
                     }
                     _ => {
-                        // General container: div, col-box, etc.
+                        // General container: div, etc.
                         render_doc_nodes(
                             &el.children,
                             pdf_doc,
@@ -618,10 +874,8 @@ fn render_doc_nodes(
                             top_margin,
                             bottom_margin,
                             width_mm,
-                            font_reg,
-                            font_bold,
-                            font_italic,
-                            font_code,
+                            fonts,
+                            indent_level,
                             doc,
                         );
                     }
@@ -631,31 +885,90 @@ fn render_doc_nodes(
     }
 }
 
-fn char_width_helvetica(ch: char) -> f32 {
-    let w = match ch {
-        ' ' => 278.0,
-        '!' | ',' | '.' | ':' | ';' | 'i' | 'l' | '\'' | '`' => 278.0,
-        'j' | 'r' | 't' | 'f' | '-' | '(' | ')' | '[' | ']' => 333.0,
-        'a' | 'b' | 'c' | 'd' | 'e' | 'g' | 'h' | 'k' | 'n' | 'o' | 'p' | 'q' | 'u' | 'v' | 'x' | 'y' | 'z' | '0'..='9' => 556.0,
-        's' => 500.0,
-        'w' => 722.0,
-        'm' => 833.0,
-        'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'K' | 'N' | 'O' | 'P' | 'Q' | 'R' | 'T' | 'U' | 'V' | 'X' | 'Y' | 'Z' => 667.0,
-        'I' => 278.0,
-        'J' => 500.0,
-        'L' => 556.0,
-        'M' | 'W' => 833.0,
-        _ => 556.0,
-    };
-    w / 1000.0
+fn char_width(ch: char, family: FontFamily, bold: bool) -> f32 {
+    match family {
+        FontFamily::Monospace => 600.0 / 1000.0,
+        FontFamily::Serif => {
+            let w = if bold {
+                match ch {
+                    ' ' => 250.0,
+                    'i' | 'l' | '!' | '.' | ',' | ':' | ';' | '\'' | '`' => 278.0,
+                    'j' | 'r' | 't' | 'f' | '-' | '(' | ')' | '[' | ']' => 333.0,
+                    's' => 444.0,
+                    'a' | 'c' | 'e' | 'o' | 'u' | 'v' | 'x' | 'z' => 500.0,
+                    'b' | 'd' | 'g' | 'h' | 'k' | 'n' | 'p' | 'q' | 'y' | '0'..='9' => 556.0,
+                    'w' => 722.0,
+                    'm' => 833.0,
+                    'I' => 333.0,
+                    'J' => 444.0,
+                    'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'K' | 'N' | 'O' | 'P' | 'Q' | 'R' | 'T' | 'U' | 'V' | 'X' | 'Y' | 'Z' => 667.0,
+                    'M' | 'W' => 889.0,
+                    _ => 500.0,
+                }
+            } else {
+                match ch {
+                    ' ' => 250.0,
+                    'i' | 'l' | '!' | '.' | ',' | ':' | ';' | '\'' | '`' => 250.0,
+                    'j' | 'r' | 't' | 'f' | '-' | '(' | ')' | '[' | ']' => 333.0,
+                    's' => 389.0,
+                    'a' | 'c' | 'e' | 'o' | 'u' | 'v' | 'x' | 'z' => 444.0,
+                    'b' | 'd' | 'g' | 'h' | 'k' | 'n' | 'p' | 'q' | 'y' | '0'..='9' => 500.0,
+                    'w' => 722.0,
+                    'm' => 778.0,
+                    'I' => 333.0,
+                    'J' => 389.0,
+                    'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'K' | 'N' | 'O' | 'P' | 'Q' | 'R' | 'T' | 'U' | 'V' | 'X' | 'Y' | 'Z' => 667.0,
+                    'M' | 'W' => 889.0,
+                    _ => 500.0,
+                }
+            };
+            w / 1000.0
+        }
+        FontFamily::SansSerif => {
+            let w = if bold {
+                match ch {
+                    ' ' => 278.0,
+                    '!' | ',' | '.' | ':' | ';' | 'i' | 'l' | '\'' | '`' => 300.0,
+                    'j' | 'r' | 't' | 'f' | '-' | '(' | ')' | '[' | ']' => 389.0,
+                    's' => 556.0,
+                    'a' | 'b' | 'c' | 'd' | 'e' | 'g' | 'h' | 'k' | 'n' | 'o' | 'p' | 'q' | 'u' | 'v' | 'x' | 'y' | 'z' | '0'..='9' => 611.0,
+                    'w' => 778.0,
+                    'm' => 889.0,
+                    'I' => 333.0,
+                    'J' => 556.0,
+                    'L' => 611.0,
+                    'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'K' | 'N' | 'O' | 'P' | 'Q' | 'R' | 'T' | 'U' | 'V' | 'X' | 'Y' | 'Z' => 722.0,
+                    'M' | 'W' => 944.0,
+                    _ => 611.0,
+                }
+            } else {
+                match ch {
+                    ' ' => 278.0,
+                    '!' | ',' | '.' | ':' | ';' | 'i' | 'l' | '\'' | '`' => 278.0,
+                    'j' | 'r' | 't' | 'f' | '-' | '(' | ')' | '[' | ']' => 333.0,
+                    's' => 500.0,
+                    'a' | 'b' | 'c' | 'd' | 'e' | 'g' | 'h' | 'k' | 'n' | 'o' | 'p' | 'q' | 'u' | 'v' | 'x' | 'y' | 'z' | '0'..='9' => 556.0,
+                    'w' => 722.0,
+                    'm' => 833.0,
+                    'I' => 278.0,
+                    'J' => 500.0,
+                    'L' => 556.0,
+                    'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'K' | 'N' | 'O' | 'P' | 'Q' | 'R' | 'T' | 'U' | 'V' | 'X' | 'Y' | 'Z' => 667.0,
+                    'M' | 'W' => 833.0,
+                    _ => 556.0,
+                }
+            };
+            w / 1000.0
+        }
+    }
 }
 
-fn measure_text(text: &str, font_size: f32, is_code: bool) -> f32 {
+fn measure_text(text: &str, font_size: f32, family: FontFamily, bold: bool) -> f32 {
     let pt_to_mm = 0.352778;
-    if is_code {
+    if family == FontFamily::Monospace {
         (text.chars().count() as f32) * 0.60 * font_size * pt_to_mm
     } else {
-        let em_sum: f32 = text.chars().map(char_width_helvetica).sum();
+        let em_sum: f32 = text.chars().map(|c| char_width(c, family, bold)).sum();
         em_sum * font_size * pt_to_mm
     }
 }
@@ -667,14 +980,14 @@ fn estimate_nodes_height(nodes: &[Node], width: f32) -> f32 {
             Node::Element(el) => {
                 let tag = el.tag.to_lowercase();
                 match tag.as_str() {
-                    "h1" => h += 14.0,
-                    "h2" => h += 10.0,
-                    "h3" => h += 8.0,
+                    "h1" => h += 16.0,
+                    "h2" => h += 11.0,
+                    "h3" => h += 8.5,
                     "p" => {
                         let text = extract_plain_text(el);
                         let chars = text.chars().count();
                         let est_lines = ((chars as f32 * 2.0) / width).ceil().max(1.0);
-                        h += est_lines * 5.0 + 4.0;
+                        h += est_lines * 5.2 + 4.0;
                     }
                     _ => h += estimate_nodes_height(&el.children, width),
                 }
@@ -683,7 +996,7 @@ fn estimate_nodes_height(nodes: &[Node], width: f32) -> f32 {
                 let chars = t.content.trim().chars().count();
                 if chars > 0 {
                     let est_lines = ((chars as f32 * 2.0) / width).ceil().max(1.0);
-                    h += est_lines * 5.0;
+                    h += est_lines * 5.2;
                 }
             }
             _ => {}
@@ -705,10 +1018,7 @@ fn render_grid(
     top_margin: f32,
     bottom_margin: f32,
     width_mm: f32,
-    font_reg: &IndirectFontRef,
-    font_bold: &IndirectFontRef,
-    font_italic: &IndirectFontRef,
-    font_code: &IndirectFontRef,
+    fonts: &FontSet,
     doc: &Document,
 ) {
     let col_divs: Vec<&ElementNode> = el
@@ -740,7 +1050,7 @@ fn render_grid(
         .iter()
         .map(|c| estimate_nodes_height(&c.children, col_width - (inner_padding * 2.0)))
         .fold(0.0f32, f32::max)
-        .max(22.0)
+        .max(24.0)
         + (inner_padding * 2.0);
 
     let uniform_bottom = start_y - max_col_height;
@@ -758,7 +1068,7 @@ fn render_grid(
             content_width,
             width_mm,
             height_mm,
-            font_reg,
+            fonts.helvetica_reg,
             doc,
         );
         *cursor_y = height_mm - top_margin;
@@ -766,8 +1076,9 @@ fn render_grid(
 
     let actual_start_y = *cursor_y;
     let actual_uniform_bottom = actual_start_y - max_col_height;
+    let card_height = actual_start_y - actual_uniform_bottom;
 
-    // Draw card background & border ONCE
+    // Draw card background & border with rounded corners
     for (i, col_el) in col_divs.iter().enumerate() {
         let is_boxed = col_el.classes.iter().any(|c| c == "col-box");
         if is_boxed {
@@ -786,18 +1097,19 @@ fn render_grid(
             )));
             current_layer.set_outline_thickness(0.6);
 
-            let mut card_rect = Rect::new(
-                Mm(col_left),
-                Mm(actual_uniform_bottom),
-                Mm(col_left + col_width),
-                Mm(actual_start_y),
+            draw_rounded_rect(
+                current_layer,
+                col_left,
+                actual_uniform_bottom,
+                col_width,
+                card_height,
+                1.8,
+                PaintMode::FillStroke,
             );
-            card_rect.mode = PaintMode::FillStroke;
-            current_layer.add_rect(card_rect);
         }
     }
 
-    // Render text inside cards ONCE
+    // Render text inside cards
     for (i, col_el) in col_divs.iter().enumerate() {
         let is_boxed = col_el.classes.iter().any(|c| c == "col-box");
         let col_left = left_margin + (i as f32) * (col_width + gap_mm);
@@ -817,10 +1129,8 @@ fn render_grid(
             top_margin,
             bottom_margin,
             width_mm,
-            font_reg,
-            font_bold,
-            font_italic,
-            font_code,
+            fonts,
+            0,
             doc,
         );
     }
@@ -873,10 +1183,10 @@ fn render_heading(
 
     let mut x = left_margin;
     if align == Some("center") {
-        let text_width_approx = (text.len() as f32) * font_size * 0.20;
+        let text_width_approx = (text.len() as f32) * font_size * 0.22;
         x = (left_margin + (content_width - text_width_approx) / 2.0).max(left_margin);
     } else if align == Some("right") {
-        let text_width_approx = (text.len() as f32) * font_size * 0.20;
+        let text_width_approx = (text.len() as f32) * font_size * 0.22;
         x = (left_margin + content_width - text_width_approx).max(left_margin);
     }
 
@@ -909,10 +1219,7 @@ fn render_styled_paragraph(
     top_margin: f32,
     bottom_margin: f32,
     width_mm: f32,
-    font_reg: &IndirectFontRef,
-    font_bold: &IndirectFontRef,
-    font_italic: &IndirectFontRef,
-    font_code: &IndirectFontRef,
+    fonts: &FontSet,
     doc: &Document,
 ) {
     let line_height_mm = font_size * 0.44;
@@ -922,7 +1229,7 @@ fn render_styled_paragraph(
         left_margin
     };
     let actual_width = if is_callout {
-        content_width - 8.0
+        content_width - 12.0
     } else {
         content_width
     };
@@ -942,9 +1249,9 @@ fn render_styled_paragraph(
         if !text.is_empty() {
             cleaned_runs.push(StyledRun {
                 text,
+                family: run.family,
                 bold: run.bold,
                 italic: run.italic,
-                code: run.code,
             });
         }
     }
@@ -955,10 +1262,12 @@ fn render_styled_paragraph(
 
     // Tokenize into words with exact font metrics
     let mut words: Vec<ParagraphWord> = Vec::new();
-    let space_w = measure_text(" ", font_size, false);
+    let space_w = measure_text(" ", font_size, FontFamily::SansSerif, false);
 
     for run in &cleaned_runs {
-        let is_code = run.code;
+        let family = run.family;
+        let bold = run.bold;
+        let italic = run.italic;
         let mut cur_word = String::new();
         let chars: Vec<char> = run.text.chars().collect();
         let n = chars.len();
@@ -968,12 +1277,12 @@ fn render_styled_paragraph(
             let ch = chars[i];
             if ch == '\n' {
                 if !cur_word.is_empty() {
-                    let w = measure_text(&cur_word, font_size, is_code);
+                    let w = measure_text(&cur_word, font_size, family, bold);
                     words.push(ParagraphWord {
                         text: cur_word,
-                        bold: run.bold,
-                        italic: run.italic,
-                        code: run.code,
+                        family,
+                        bold,
+                        italic,
                         has_trailing_space: false,
                         width_mm: w,
                     });
@@ -981,21 +1290,21 @@ fn render_styled_paragraph(
                 }
                 words.push(ParagraphWord {
                     text: "\n".to_string(),
-                    bold: run.bold,
-                    italic: run.italic,
-                    code: run.code,
+                    family,
+                    bold,
+                    italic,
                     has_trailing_space: false,
                     width_mm: 0.0,
                 });
                 i += 1;
             } else if ch.is_whitespace() {
                 if !cur_word.is_empty() {
-                    let w = measure_text(&cur_word, font_size, is_code);
+                    let w = measure_text(&cur_word, font_size, family, bold);
                     words.push(ParagraphWord {
                         text: cur_word,
-                        bold: run.bold,
-                        italic: run.italic,
-                        code: run.code,
+                        family,
+                        bold,
+                        italic,
                         has_trailing_space: true,
                         width_mm: w,
                     });
@@ -1006,6 +1315,20 @@ fn render_styled_paragraph(
                 while i < n && chars[i].is_whitespace() && chars[i] != '\n' {
                     i += 1;
                 }
+            } else if (ch == ',' || ch == '.' || ch == ':' || ch == ';' || ch == '!' || ch == '?')
+                && cur_word.is_empty()
+            {
+                // Punctuation following an inline tag clings to the preceding token
+                if let Some(last) = words.last_mut() {
+                    if !last.has_trailing_space {
+                        last.text.push(ch);
+                        last.width_mm = measure_text(&last.text, font_size, last.family, last.bold);
+                        i += 1;
+                        continue;
+                    }
+                }
+                cur_word.push(ch);
+                i += 1;
             } else {
                 cur_word.push(ch);
                 i += 1;
@@ -1013,12 +1336,12 @@ fn render_styled_paragraph(
         }
 
         if !cur_word.is_empty() {
-            let w = measure_text(&cur_word, font_size, is_code);
+            let w = measure_text(&cur_word, font_size, family, bold);
             words.push(ParagraphWord {
                 text: cur_word,
-                bold: run.bold,
-                italic: run.italic,
-                code: run.code,
+                family,
+                bold,
+                italic,
                 has_trailing_space: false,
                 width_mm: w,
             });
@@ -1067,17 +1390,17 @@ fn render_styled_paragraph(
 
         let mut spans: Vec<LineSpan> = Vec::new();
         let mut cur_span_text = String::new();
+        let mut cur_family = FontFamily::SansSerif;
         let mut cur_bold = false;
         let mut cur_italic = false;
-        let mut cur_code = false;
         let num_words = line_words.len();
 
         for (idx, w) in line_words.iter().enumerate() {
             let is_last_word = idx == num_words - 1;
             let style_matches = !cur_span_text.is_empty()
+                && cur_family == w.family
                 && cur_bold == w.bold
-                && cur_italic == w.italic
-                && cur_code == w.code;
+                && cur_italic == w.italic;
 
             if style_matches {
                 cur_span_text.push_str(&w.text);
@@ -1086,12 +1409,12 @@ fn render_styled_paragraph(
                 }
             } else {
                 if !cur_span_text.is_empty() {
-                    let span_w = measure_text(&cur_span_text, font_size, cur_code);
+                    let span_w = measure_text(&cur_span_text, font_size, cur_family, cur_bold);
                     spans.push(LineSpan {
                         text: cur_span_text,
+                        family: cur_family,
                         bold: cur_bold,
                         italic: cur_italic,
-                        code: cur_code,
                         font_size,
                         width_mm: span_w,
                     });
@@ -1100,19 +1423,19 @@ fn render_styled_paragraph(
                 if w.has_trailing_space && !is_last_word {
                     cur_span_text.push(' ');
                 }
+                cur_family = w.family;
                 cur_bold = w.bold;
                 cur_italic = w.italic;
-                cur_code = w.code;
             }
         }
 
         if !cur_span_text.is_empty() {
-            let span_w = measure_text(&cur_span_text, font_size, cur_code);
+            let span_w = measure_text(&cur_span_text, font_size, cur_family, cur_bold);
             spans.push(LineSpan {
                 text: cur_span_text,
+                family: cur_family,
                 bold: cur_bold,
                 italic: cur_italic,
-                code: cur_code,
                 font_size,
                 width_mm: span_w,
             });
@@ -1141,16 +1464,17 @@ fn render_styled_paragraph(
             content_width,
             width_mm,
             height_mm,
-            font_reg,
+            fonts.helvetica_reg,
             doc,
         );
         *cursor_y = height_mm - top_margin;
     }
 
-    // Draw Callout filled background (#F0FDF4) and left green accent bar (#16A34A)
+    // Draw Callout filled rounded background (#F0FDF4) and left green accent bar (#16A34A)
     if is_callout {
-        let callout_top_y = *cursor_y + 2.5;
-        let callout_bottom_y = *cursor_y - total_paragraph_height - 1.5;
+        let callout_top_y = *cursor_y + 3.0;
+        let callout_bottom_y = *cursor_y - total_paragraph_height - 2.5;
+        let callout_h = callout_top_y - callout_bottom_y;
 
         current_layer.set_fill_color(Color::Rgb(Rgb::new(
             240.0 / 255.0,
@@ -1158,14 +1482,15 @@ fn render_styled_paragraph(
             244.0 / 255.0,
             None,
         )));
-        let mut bg_rect = Rect::new(
-            Mm(left_margin),
-            Mm(callout_bottom_y),
-            Mm(left_margin + content_width),
-            Mm(callout_top_y),
+        draw_rounded_rect(
+            current_layer,
+            left_margin,
+            callout_bottom_y,
+            content_width,
+            callout_h,
+            1.8,
+            PaintMode::Fill,
         );
-        bg_rect.mode = PaintMode::Fill;
-        current_layer.add_rect(bg_rect);
 
         current_layer.set_fill_color(Color::Rgb(Rgb::new(
             22.0 / 255.0,
@@ -1173,14 +1498,15 @@ fn render_styled_paragraph(
             74.0 / 255.0,
             None,
         )));
-        let mut bar_rect = Rect::new(
-            Mm(left_margin),
-            Mm(callout_bottom_y),
-            Mm(left_margin + 1.8),
-            Mm(callout_top_y),
+        draw_rounded_rect(
+            current_layer,
+            left_margin,
+            callout_bottom_y,
+            2.2,
+            callout_h,
+            1.0,
+            PaintMode::Fill,
         );
-        bar_rect.mode = PaintMode::Fill;
-        current_layer.add_rect(bar_rect);
     }
 
     // Render lines of text
@@ -1193,18 +1519,10 @@ fn render_styled_paragraph(
         }
 
         for span in &spans {
-            let font = if span.code {
-                font_code
-            } else if span.bold {
-                font_bold
-            } else if span.italic {
-                font_italic
-            } else {
-                font_reg
-            };
+            let font = fonts.select(span.family, span.bold, span.italic);
 
-            if span.code {
-                // Subtle code pill background
+            if span.family == FontFamily::Monospace {
+                // Rounded subtle code pill background
                 let pill_pad_x = 0.8;
                 let pill_pad_y = 0.4;
                 current_layer.set_fill_color(Color::Rgb(Rgb::new(
@@ -1213,17 +1531,22 @@ fn render_styled_paragraph(
                     249.0 / 255.0,
                     None,
                 )));
-                let mut pill = Rect::new(
-                    Mm(x - pill_pad_x),
-                    Mm(*cursor_y - pill_pad_y),
-                    Mm(x + span.width_mm + pill_pad_x),
-                    Mm(*cursor_y + span.font_size * 0.35 + pill_pad_y),
+                let pill_x = x - pill_pad_x;
+                let pill_y = *cursor_y - pill_pad_y;
+                let pill_w = span.width_mm + (pill_pad_x * 2.0);
+                let pill_h = span.font_size * 0.35 + (pill_pad_y * 2.0);
+                draw_rounded_rect(
+                    current_layer,
+                    pill_x,
+                    pill_y,
+                    pill_w,
+                    pill_h,
+                    0.8,
+                    PaintMode::Fill,
                 );
-                pill.mode = PaintMode::Fill;
-                current_layer.add_rect(pill);
             }
 
-            if span.code {
+            if span.family == FontFamily::Monospace {
                 current_layer.set_fill_color(Color::Rgb(Rgb::new(
                     15.0 / 255.0,
                     23.0 / 255.0,
@@ -1270,8 +1593,7 @@ fn render_table(
     top_margin: f32,
     bottom_margin: f32,
     width_mm: f32,
-    font_reg: &IndirectFontRef,
-    font_bold: &IndirectFontRef,
+    fonts: &FontSet,
     doc: &Document,
 ) {
     let mut rows: Vec<&ElementNode> = Vec::new();
@@ -1300,7 +1622,7 @@ fn render_table(
     }
 
     let col_width = content_width / (max_cols as f32);
-    *cursor_y -= 2.0;
+    *cursor_y -= 3.0;
 
     for row in rows {
         let cells: Vec<&ElementNode> = row
@@ -1325,8 +1647,12 @@ fn render_table(
         }
 
         let is_header_row = cells.iter().any(|c| c.tag.to_lowercase() == "th");
-        let font = if is_header_row { font_bold } else { font_reg };
-        let row_height_mm = 8.0f32;
+        let font = if is_header_row {
+            fonts.helvetica_bold
+        } else {
+            fonts.helvetica_reg
+        };
+        let row_height_mm = 8.5f32;
 
         if *cursor_y - row_height_mm < bottom_margin {
             *page_count += 1;
@@ -1341,28 +1667,68 @@ fn render_table(
                 content_width,
                 width_mm,
                 height_mm,
-                font_reg,
+                fonts.helvetica_reg,
                 doc,
             );
             *cursor_y = height_mm - top_margin;
         }
 
+        // Row background & bottom border
+        if is_header_row {
+            current_layer.set_fill_color(Color::Rgb(Rgb::new(
+                248.0 / 255.0,
+                250.0 / 255.0,
+                252.0 / 255.0,
+                None,
+            )));
+            let mut header_rect = Rect::new(
+                Mm(left_margin),
+                Mm(*cursor_y - row_height_mm),
+                Mm(left_margin + content_width),
+                Mm(*cursor_y),
+            );
+            header_rect.mode = PaintMode::Fill;
+            current_layer.add_rect(header_rect);
+        }
+
+        current_layer.set_outline_color(Color::Rgb(Rgb::new(
+            226.0 / 255.0,
+            232.0 / 255.0,
+            240.0 / 255.0,
+            None,
+        )));
+        current_layer.set_outline_thickness(0.5);
+        let border_line = Line {
+            points: vec![
+                (Point::new(Mm(left_margin), Mm(*cursor_y - row_height_mm)), false),
+                (Point::new(Mm(left_margin + content_width), Mm(*cursor_y - row_height_mm)), false),
+            ],
+            is_closed: false,
+        };
+        current_layer.add_line(border_line);
+
         for (col_idx, cell) in cells.iter().enumerate() {
-            let cell_x = left_margin + (col_idx as f32) * col_width + 1.5;
+            let cell_x = left_margin + (col_idx as f32) * col_width + 2.5;
             let text = extract_plain_text(cell);
-            let max_chars = ((col_width - 3.0) * 2.2).max(10.0) as usize;
+            let max_chars = ((col_width - 5.0) * 2.2).max(10.0) as usize;
             let display_text = if text.len() > max_chars {
                 format!("{}...", &text[..max_chars.saturating_sub(3)])
             } else {
                 text
             };
-            current_layer.use_text(&display_text, 9.5, Mm(cell_x), Mm(*cursor_y - 4.5), font);
+            current_layer.set_fill_color(Color::Rgb(Rgb::new(
+                15.0 / 255.0,
+                23.0 / 255.0,
+                42.0 / 255.0,
+                None,
+            )));
+            current_layer.use_text(&display_text, 9.5, Mm(cell_x), Mm(*cursor_y - 5.5), font);
         }
 
         *cursor_y -= row_height_mm;
     }
 
-    *cursor_y -= 3.0;
+    *cursor_y -= 4.0;
 }
 
 fn collect_rows<'a>(el: &'a ElementNode, rows: &mut Vec<&'a ElementNode>) {

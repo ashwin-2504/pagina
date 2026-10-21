@@ -20,8 +20,9 @@ enum ImportedBlock {
     Heading(u8, Option<String>, String),
     Paragraph(Option<String>, bool, String),
     Callout(String),
-    BulletList(Vec<String>),
-    NumberList(Vec<String>),
+    Blockquote(String),
+    BulletList(String, Vec<String>),
+    NumberList(String, Vec<String>),
     Table(Vec<Vec<Vec<String>>>),
     Grid(Vec<Vec<String>>),
 }
@@ -77,6 +78,56 @@ fn format_coalesced_inlines(tokens: &[InlineToken]) -> String {
     out
 }
 
+fn detect_bullet_item(trimmed: &str) -> Option<(&'static str, String)> {
+    if let Some(rest) = trimmed.strip_prefix('•').or_else(|| trimmed.strip_prefix('\u{2022}')) {
+        return Some(("disc", rest.trim_start().to_string()));
+    }
+    if let Some(rest) = trimmed.strip_prefix('◦').or_else(|| trimmed.strip_prefix('\u{25E6}')) {
+        return Some(("circle", rest.trim_start().to_string()));
+    }
+    if let Some(rest) = trimmed.strip_prefix('▪').or_else(|| trimmed.strip_prefix('\u{25AA}')).or_else(|| trimmed.strip_prefix('■')) {
+        return Some(("square", rest.trim_start().to_string()));
+    }
+    if let Some(rest) = trimmed.strip_prefix('–').or_else(|| trimmed.strip_prefix('—')) {
+        return Some(("dash", rest.trim_start().to_string()));
+    }
+    if trimmed.starts_with("- ") {
+        return Some(("dash", trimmed[2..].trim_start().to_string()));
+    }
+    None
+}
+
+fn detect_number_item(trimmed: &str) -> Option<(&'static str, String)> {
+    if let Some(first) = trimmed.chars().next() {
+        if first.is_ascii_digit() {
+            let rest = trimmed.trim_start_matches(|c: char| c.is_ascii_digit());
+            if let Some(content) = rest.strip_prefix(". ").or_else(|| rest.strip_prefix(") ")) {
+                return Some(("1", content.trim().to_string()));
+            }
+        }
+    }
+    let chars: Vec<char> = trimmed.chars().collect();
+    if chars.len() >= 3 && chars[0].is_ascii_lowercase() && (chars[1] == '.' || chars[1] == ')') && chars[2].is_whitespace() {
+        return Some(("a", trimmed[3..].trim().to_string()));
+    }
+    if chars.len() >= 3 && chars[0].is_ascii_uppercase() && (chars[1] == '.' || chars[1] == ')') && chars[2].is_whitespace() {
+        return Some(("A", trimmed[3..].trim().to_string()));
+    }
+    let lower_roman_prefixes = ["i. ", "ii. ", "iii. ", "iv. ", "v. ", "vi. ", "vii. ", "viii. ", "ix. ", "x. "];
+    for p in &lower_roman_prefixes {
+        if trimmed.starts_with(p) {
+            return Some(("i", trimmed[p.len()..].trim().to_string()));
+        }
+    }
+    let upper_roman_prefixes = ["I. ", "II. ", "III. ", "IV. ", "V. ", "VI. ", "VII. ", "VIII. ", "IX. ", "X. "];
+    for p in &upper_roman_prefixes {
+        if trimmed.starts_with(p) {
+            return Some(("I", trimmed[p.len()..].trim().to_string()));
+        }
+    }
+    None
+}
+
 pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Error + Send + Sync>> {
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
 
@@ -95,6 +146,7 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
     let mut current_p_align: Option<String> = None;
     let mut current_p_is_callout = false;
     let mut current_p_tokens: Vec<InlineToken> = Vec::new();
+    let mut font_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
 
     let mut in_r = false;
     let mut in_t = false;
@@ -257,6 +309,8 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
                                             || f_lower.contains("code")
                                         {
                                             is_code = true;
+                                        } else if !font_name.trim().is_empty() {
+                                            *font_counts.entry(font_name.to_string()).or_insert(0) += 1;
                                         }
                                     }
                                 }
@@ -397,17 +451,49 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
                             } else if style_lower.contains("heading 3") || style_lower == "3" || style_lower == "heading3" {
                                 blocks.push(ImportedBlock::Heading(3, align, formatted_line));
                             } else if style_lower.contains("listbullet") {
-                                if let Some(ImportedBlock::BulletList(items)) = blocks.last_mut() {
-                                    items.push(formatted_line);
+                                let (b_type, clean_text) = detect_bullet_item(trimmed).unwrap_or(("disc", formatted_line.clone()));
+                                if let Some(ImportedBlock::BulletList(cur_type, items)) = blocks.last_mut() {
+                                    if cur_type == b_type {
+                                        items.push(clean_text);
+                                    } else {
+                                        blocks.push(ImportedBlock::BulletList(b_type.to_string(), vec![clean_text]));
+                                    }
                                 } else {
-                                    blocks.push(ImportedBlock::BulletList(vec![formatted_line]));
+                                    blocks.push(ImportedBlock::BulletList(b_type.to_string(), vec![clean_text]));
                                 }
-                            } else if style_lower.contains("listnumber") {
-                                if let Some(ImportedBlock::NumberList(items)) = blocks.last_mut() {
-                                    items.push(formatted_line);
+                            } else if style_lower.contains("listnumber") || style_lower.contains("numbered") {
+                                let (n_type, clean_text) = detect_number_item(trimmed).unwrap_or(("1", formatted_line.clone()));
+                                if let Some(ImportedBlock::NumberList(cur_type, items)) = blocks.last_mut() {
+                                    if cur_type == n_type {
+                                        items.push(clean_text);
+                                    } else {
+                                        blocks.push(ImportedBlock::NumberList(n_type.to_string(), vec![clean_text]));
+                                    }
                                 } else {
-                                    blocks.push(ImportedBlock::NumberList(vec![formatted_line]));
+                                    blocks.push(ImportedBlock::NumberList(n_type.to_string(), vec![clean_text]));
                                 }
+                            } else if let Some((b_type, clean_text)) = detect_bullet_item(trimmed) {
+                                if let Some(ImportedBlock::BulletList(cur_type, items)) = blocks.last_mut() {
+                                    if cur_type == b_type {
+                                        items.push(clean_text);
+                                    } else {
+                                        blocks.push(ImportedBlock::BulletList(b_type.to_string(), vec![clean_text]));
+                                    }
+                                } else {
+                                    blocks.push(ImportedBlock::BulletList(b_type.to_string(), vec![clean_text]));
+                                }
+                            } else if let Some((n_type, clean_text)) = detect_number_item(trimmed) {
+                                if let Some(ImportedBlock::NumberList(cur_type, items)) = blocks.last_mut() {
+                                    if cur_type == n_type {
+                                        items.push(clean_text);
+                                    } else {
+                                        blocks.push(ImportedBlock::NumberList(n_type.to_string(), vec![clean_text]));
+                                    }
+                                } else {
+                                    blocks.push(ImportedBlock::NumberList(n_type.to_string(), vec![clean_text]));
+                                }
+                            } else if style_lower.contains("quote") {
+                                blocks.push(ImportedBlock::Blockquote(formatted_line));
                             } else {
                                 // Intelligent heading detection heuristic:
                                 // Short title with all bold tokens and no terminating period
@@ -488,16 +574,32 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
                     text
                 ));
             }
-            ImportedBlock::BulletList(items) => {
-                let mut list_xml = String::from("      <ul>\n");
+            ImportedBlock::Blockquote(text) => {
+                body_nodes.push(format!(
+                    "      <blockquote>\n        <p>{}</p>\n      </blockquote>",
+                    text
+                ));
+            }
+            ImportedBlock::BulletList(b_type, items) => {
+                let type_attr = if b_type != "disc" {
+                    format!(" type=\"{}\"", b_type)
+                } else {
+                    String::new()
+                };
+                let mut list_xml = format!("      <ul{}>\n", type_attr);
                 for item in items {
                     list_xml.push_str(&format!("        <li>{}</li>\n", item));
                 }
                 list_xml.push_str("      </ul>");
                 body_nodes.push(list_xml);
             }
-            ImportedBlock::NumberList(items) => {
-                let mut list_xml = String::from("      <ol>\n");
+            ImportedBlock::NumberList(n_type, items) => {
+                let type_attr = if n_type != "1" {
+                    format!(" type=\"{}\"", n_type)
+                } else {
+                    String::new()
+                };
+                let mut list_xml = format!("      <ol{}>\n", type_attr);
                 for item in items {
                     list_xml.push_str(&format!("        <li>{}</li>\n", item));
                 }
@@ -576,93 +678,121 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
         }
     );
 
-    let dcss = r#"/* Generated by Pagina OpenXML Reverse Engine */
-h1 {
+    let primary_font = font_counts
+        .into_iter()
+        .max_by_key(|&(_, count)| count)
+        .map(|(name, _)| name)
+        .unwrap_or_else(|| "Inter, system-ui, sans-serif".to_string());
+
+    let dcss = format!(
+        r#"/* Generated by Pagina OpenXML Reverse Engine */
+body {{
+  font-family: "{primary_font}", system-ui, sans-serif;
+  color: #334155;
+}}
+
+h1 {{
   font-size: 24pt;
   font-weight: bold;
   color: #1e3a8a;
   margin-bottom: 5mm;
-}
+}}
 
-h2 {
+h2 {{
   font-size: 16pt;
   font-weight: bold;
   color: #0f172a;
   margin-top: 6mm;
   margin-bottom: 3mm;
-}
+}}
 
-h3 {
+h3 {{
   font-size: 12pt;
   font-weight: 600;
   color: #1e293b;
   margin-bottom: 2mm;
-}
+}}
 
-p {
+p {{
   font-size: 10.5pt;
   line-height: 1.6;
   color: #334155;
-  margin-bottom: 3mm;
-}
+  margin-bottom: 3.5mm;
+}}
 
-p.lead {
+p.lead {{
   font-size: 12pt;
   color: #475569;
-}
+}}
 
-.callout {
+blockquote {{
+  margin-left: 6mm;
+  padding-left: 4mm;
+  border-left: 3px solid #cbd5e1;
+  color: #475569;
+  margin-bottom: 4mm;
+}}
+
+ul, ol {{
+  margin-left: 6mm;
+  margin-bottom: 3.5mm;
+  padding-left: 2mm;
+}}
+
+.callout {{
   background-color: #f0fdf4;
   border-left: 4px solid #16a34a;
   padding: 4mm 6mm;
   margin: 4mm 0;
   border-radius: 4px;
-}
+}}
 
-.col-box {
+.col-box {{
   background-color: #f8fafc;
   border: 1px solid #e2e8f0;
   border-radius: 6px;
   padding: 4mm;
-}
+}}
 
-code {
+code {{
   font-family: Consolas, monospace;
   background-color: #f1f5f9;
   padding: 1px 4px;
   border-radius: 3px;
   font-size: 9.5pt;
-}
+}}
 
-table {
+table {{
   width: 100%;
   border-collapse: collapse;
   margin: 4mm 0;
-}
+}}
 
-th, td {
+th, td {{
   border: 1px solid #cbd5e1;
-  padding: 2mm 3mm;
+  padding: 2.5mm 3.5mm;
   text-align: left;
-}
+}}
 
-th {
+th {{
   background-color: #f8fafc;
   font-weight: bold;
-}
+}}
 
-p[align="center"], h1[align="center"], h2[align="center"] {
+p[align="center"], h1[align="center"], h2[align="center"] {{
   text-align: center;
-}
+}}
 
-p[align="right"] {
+p[align="right"] {{
   text-align: right;
-}
+}}
 
-p[align="justify"] {
+p[align="justify"] {{
   text-align: justify;
-}
-"#.to_string();
+}}
+"#,
+        primary_font = primary_font
+    );
 
     Ok(ImportResult { dxml, dcss })
 }
