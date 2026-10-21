@@ -1,4 +1,5 @@
 use crate::ImportResult;
+use std::collections::HashMap;
 
 #[derive(Debug)]
 enum ListPrefix {
@@ -509,7 +510,11 @@ th {
 }
 "#.to_string();
 
-    Ok(ImportResult { dxml, dcss })
+    Ok(ImportResult {
+        dxml,
+        dcss,
+        assets: HashMap::new(),
+    })
 }
 
 fn escape_xml(s: &str) -> String {

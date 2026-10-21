@@ -12,6 +12,25 @@ interface ErrorInfo {
 interface DocumentRendererProps {
   doc: ParsedDocument | null;
   error: ErrorInfo | null;
+  assets?: Record<string, string>;
+}
+
+const AssetContext = React.createContext<Record<string, string>>({});
+
+function hasFullBleedImage(nodes?: DocNode[]): boolean {
+  if (!nodes) return false;
+  return nodes.some(n => {
+    if (n.type === 'Element') {
+      const el = n as ElementNode;
+      if (el.tag.toLowerCase() === 'img') {
+        if (el.classes?.includes('full-bleed') || el.inline_styles?.width === '100%') {
+          return true;
+        }
+      }
+      return hasFullBleedImage(el.children);
+    }
+    return false;
+  });
 }
 
 function hasImageNode(nodes?: DocNode[]): boolean {
@@ -26,7 +45,7 @@ function hasImageNode(nodes?: DocNode[]): boolean {
   });
 }
 
-export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error }) => {
+export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error, assets = {} }) => {
   if (error) {
     return (
       <div style={{
@@ -90,7 +109,16 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error }
       const decls = Object.entries(rule.declarations)
         .map(([k, v]) => `  ${k}: ${v} !important;`)
         .join('\n');
-      const selectors = rule.selectors.map(s => `.ddl-paper ${s}`).join(', ');
+      const selectors = rule.selectors.map(s => {
+        const trimmed = s.trim();
+        if (trimmed === 'body' || trimmed === ':root' || trimmed === 'html') {
+          return '.ddl-paper';
+        }
+        if (trimmed.startsWith('body ')) {
+          return `.ddl-paper ${trimmed.slice(5)}`;
+        }
+        return `.ddl-paper ${trimmed}`;
+      }).join(', ');
       return `${selectors} {\n${decls}\n}`;
     }).join('\n\n');
   }, [doc.props?.stylesheet]);
@@ -148,7 +176,7 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error }
   }, [doc]);
 
   return (
-    <>
+    <AssetContext.Provider value={assets}>
       {customCss && <style>{customCss}</style>}
       <div style={{
         display: 'flex',
@@ -159,6 +187,11 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error }
       }}>
         {sections.map((sec, idx) => {
           const pageStyle: PageStyle | undefined = doc.props.page_styles[sec.pageStyleName];
+          const hasFullBleedFooter = pageStyle?.running_footer && (
+            hasFullBleedImage(pageStyle.running_footer.center) ||
+            hasFullBleedImage(pageStyle.running_footer.left) ||
+            hasFullBleedImage(pageStyle.running_footer.right)
+          );
           return (
             <div
               key={idx}
@@ -169,11 +202,13 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error }
                 backgroundColor: '#ffffff',
                 boxShadow: '0 8px 30px rgba(0, 0, 0, 0.28)',
                 padding: `${marginMm}mm`,
+                paddingBottom: hasFullBleedFooter ? '36mm' : `${marginMm}mm`,
                 boxSizing: 'border-box',
                 position: 'relative',
+                overflow: 'hidden',
                 borderRadius: '2px',
                 color: '#1e293b',
-                fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+                fontFamily: 'inherit',
                 display: 'flex',
                 flexDirection: 'column',
                 textAlign: 'left',
@@ -204,6 +239,26 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error }
                 const hasImg = hasImageNode(pageStyle.running_header.center) ||
                                hasImageNode(pageStyle.running_header.left) ||
                                hasImageNode(pageStyle.running_header.right);
+                const hasLeft = pageStyle.running_header.left && pageStyle.running_header.left.length > 0;
+                const hasCenter = pageStyle.running_header.center && pageStyle.running_header.center.length > 0;
+                const hasRight = pageStyle.running_header.right && pageStyle.running_header.right.length > 0;
+
+                if (hasCenter && !hasLeft && !hasRight) {
+                  return (
+                    <div style={{
+                      width: '100%',
+                      textAlign: 'center',
+                      borderBottom: hasImg ? 'none' : '1px solid #e2e8f0',
+                      paddingBottom: hasImg ? '0' : '3mm',
+                      marginBottom: hasImg ? '3mm' : '8mm',
+                      fontSize: '9pt',
+                      userSelect: 'none',
+                    }}>
+                      <RenderChildren nodes={pageStyle.running_header.center} />
+                    </div>
+                  );
+                }
+
                 return (
                   <div style={{
                     display: 'flex',
@@ -216,9 +271,9 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error }
                     color: '#64748b',
                     userSelect: 'none',
                   }}>
-                    <div style={{ flex: 1, textAlign: 'left' }}><RenderChildren nodes={pageStyle.running_header.left} /></div>
-                    <div style={{ flex: 1, textAlign: 'center' }}><RenderChildren nodes={pageStyle.running_header.center} /></div>
-                    <div style={{ flex: 1, textAlign: 'right' }}><RenderChildren nodes={pageStyle.running_header.right} /></div>
+                    <div style={{ flex: hasLeft ? 1 : 0, textAlign: 'left' }}><RenderChildren nodes={pageStyle.running_header.left} /></div>
+                    <div style={{ flex: hasCenter ? 2 : 0, textAlign: 'center' }}><RenderChildren nodes={pageStyle.running_header.center} /></div>
+                    <div style={{ flex: hasRight ? 1 : 0, textAlign: 'right' }}><RenderChildren nodes={pageStyle.running_header.right} /></div>
                   </div>
                 );
               })()}
@@ -230,6 +285,26 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error }
 
               {/* Running Footer */}
               {pageStyle?.running_footer && (() => {
+                if (hasFullBleedFooter) {
+                  const bleedNodes = (pageStyle.running_footer.center && pageStyle.running_footer.center.length > 0)
+                    ? pageStyle.running_footer.center
+                    : ((pageStyle.running_footer.left && pageStyle.running_footer.left.length > 0)
+                      ? pageStyle.running_footer.left
+                      : pageStyle.running_footer.right);
+                  return (
+                    <div style={{
+                      position: 'absolute',
+                      bottom: 0,
+                      left: 0,
+                      width: '100%',
+                      lineHeight: 0,
+                      zIndex: 2,
+                      userSelect: 'none',
+                    }}>
+                      <RenderChildren nodes={bleedNodes} />
+                    </div>
+                  );
+                }
                 const hasImg = hasImageNode(pageStyle.running_footer.center) ||
                                hasImageNode(pageStyle.running_footer.left) ||
                                hasImageNode(pageStyle.running_footer.right);
@@ -255,7 +330,7 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error }
           );
         })}
       </div>
-    </>
+    </AssetContext.Provider>
   );
 };
 
@@ -329,9 +404,12 @@ const RenderElement: React.FC<{ el: ElementNode }> = ({ el }) => {
   }
 
   if (tagLower === 'img') {
+    const assets = React.useContext(AssetContext);
+    const rawSrc = attributes['src'] || '';
+    const resolvedSrc = (assets && assets[rawSrc]) ? assets[rawSrc] : rawSrc;
     return (
       <img
-        src={attributes['src']}
+        src={resolvedSrc}
         alt={attributes['alt'] || ''}
         className={className}
         style={{

@@ -48,7 +48,15 @@ fn collect_images_from_doc(doc: &Document) -> HashMap<String, ImageEntry> {
                                 } else if let Ok(b) = std::fs::read(src) {
                                     (b, "png")
                                 } else {
-                                    (Vec::new(), "png")
+                                    let mut found = None;
+                                    for prefix in &["assets/", "media/", "../", "../media/", "word/media/"] {
+                                        let candidate = format!("{}{}", prefix, src);
+                                        if let Ok(b) = std::fs::read(&candidate) {
+                                            found = Some((b, "png"));
+                                            break;
+                                        }
+                                    }
+                                    found.unwrap_or_else(|| (Vec::new(), "png"))
                                 };
 
                                 if !bytes.is_empty() {

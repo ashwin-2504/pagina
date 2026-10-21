@@ -577,8 +577,9 @@ fn extract_image_rid_from_part_xml(xml_str: &str) -> Option<String> {
 pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Error + Send + Sync>> {
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
 
-    // 1. Extract all media files into data URLs
-    let mut media_store: HashMap<String, String> = HashMap::new();
+    // 1. Extract all media files into assets map (clean filenames -> data URLs) and path lookup map
+    let mut assets: HashMap<String, String> = HashMap::new();
+    let mut media_path_to_filename: HashMap<String, String> = HashMap::new();
     for i in 0..archive.len() {
         if let Ok(mut file) = archive.by_index(i) {
             let name = file.name().to_string();
@@ -604,16 +605,18 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
                     let b64 = base64::engine::general_purpose::STANDARD.encode(&img_bytes);
                     let data_url = format!("data:{};base64,{}", mime, b64);
                     let filename = name.split('/').last().unwrap_or(&name).to_string();
-                    media_store.insert(name.clone(), data_url.clone());
-                    media_store.insert(filename.clone(), data_url.clone());
-                    media_store.insert(format!("media/{}", filename), data_url.clone());
-                    media_store.insert(format!("../media/{}", filename), data_url.clone());
+                    assets.insert(filename.clone(), data_url);
+                    media_path_to_filename.insert(name.clone(), filename.clone());
+                    media_path_to_filename.insert(filename.clone(), filename.clone());
+                    media_path_to_filename.insert(format!("media/{}", filename), filename.clone());
+                    media_path_to_filename.insert(format!("../media/{}", filename), filename.clone());
+                    media_path_to_filename.insert(format!("word/media/{}", filename), filename.clone());
                 }
             }
         }
     }
 
-    // 2. Parse relationship files
+    // 2. Parse relationship files to map rId -> clean filename (e.g. "image1.png")
     let doc_rels = {
         let mut xml = String::new();
         if let Ok(mut f) = archive.by_name("word/_rels/document.xml.rels") {
@@ -625,14 +628,14 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
     let doc_img_rels: HashMap<String, String> = doc_rels
         .iter()
         .filter_map(|(id, target)| {
-            let direct = media_store.get(target);
-            let fallback = media_store.get(target.split('/').last().unwrap_or(target));
-            direct.or(fallback).map(|url| (id.clone(), url.clone()))
+            let direct = media_path_to_filename.get(target);
+            let fallback = media_path_to_filename.get(target.split('/').last().unwrap_or(target));
+            direct.or(fallback).map(|fname| (id.clone(), fname.clone()))
         })
         .collect();
 
     // 3. Extract Header and Footer images if present
-    let header_img_url = {
+    let (header_img_filename, _header_is_bleed) = {
         let mut h_rels_xml = String::new();
         if let Ok(mut f) = archive.by_name("word/_rels/header1.xml.rels") {
             let _ = f.read_to_string(&mut h_rels_xml);
@@ -642,16 +645,17 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
         if let Ok(mut f) = archive.by_name("word/header1.xml") {
             let _ = f.read_to_string(&mut h_xml);
         }
-        extract_image_rid_from_part_xml(&h_xml).and_then(|rid| {
+        let fname = extract_image_rid_from_part_xml(&h_xml).and_then(|rid| {
             h_rels.get(&rid).and_then(|tgt| {
-                let direct = media_store.get(tgt);
-                let fallback = media_store.get(tgt.split('/').last().unwrap_or(tgt));
+                let direct = media_path_to_filename.get(tgt);
+                let fallback = media_path_to_filename.get(tgt.split('/').last().unwrap_or(tgt));
                 direct.or(fallback).cloned()
             })
-        })
+        });
+        (fname, false)
     };
 
-    let footer_img_url = {
+    let (footer_img_filename, footer_is_full_bleed) = {
         let mut f_rels_xml = String::new();
         if let Ok(mut f) = archive.by_name("word/_rels/footer1.xml.rels") {
             let _ = f.read_to_string(&mut f_rels_xml);
@@ -661,13 +665,19 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
         if let Ok(mut f) = archive.by_name("word/footer1.xml") {
             let _ = f.read_to_string(&mut f_xml);
         }
-        extract_image_rid_from_part_xml(&f_xml).and_then(|rid| {
+        let is_bleed = f_xml.contains("-914400")
+            || f_xml.contains("margin-left:-")
+            || f_xml.contains("cx=\"77")
+            || f_xml.contains("cx=\"78")
+            || f_xml.contains("612.23pt");
+        let fname = extract_image_rid_from_part_xml(&f_xml).and_then(|rid| {
             f_rels.get(&rid).and_then(|tgt| {
-                let direct = media_store.get(tgt);
-                let fallback = media_store.get(tgt.split('/').last().unwrap_or(tgt));
+                let direct = media_path_to_filename.get(tgt);
+                let fallback = media_path_to_filename.get(tgt.split('/').last().unwrap_or(tgt));
                 direct.or(fallback).cloned()
             })
-        })
+        });
+        (fname, is_bleed)
     };
 
     let numbering_info = {
@@ -700,6 +710,8 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
     let mut current_p_ilvl: u32 = 0;
     let mut current_p_tokens: Vec<InlineToken> = Vec::new();
     let mut font_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut font_size_counts: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+    let mut font_color_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
 
     let mut in_r = false;
     let mut in_t = false;
@@ -1020,6 +1032,33 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
                                             is_code = true;
                                         } else if !font_name.trim().is_empty() {
                                             *font_counts.entry(font_name.to_string()).or_insert(0) += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    b"w:sz" | b"w:szCs" => {
+                        if in_r {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.as_ref() == b"w:val" {
+                                    if let Ok(val) = std::str::from_utf8(&attr.value) {
+                                        if let Ok(half_pts) = val.parse::<u32>() {
+                                            *font_size_counts.entry(half_pts).or_insert(0) += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    b"w:color" => {
+                        if in_r {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.as_ref() == b"w:val" {
+                                    if let Ok(val) = std::str::from_utf8(&attr.value) {
+                                        let v = val.trim();
+                                        if v != "auto" && !v.is_empty() && v != "000000" {
+                                            *font_color_counts.entry(format!("#{}", v)).or_insert(0) += 1;
                                         }
                                     }
                                 }
@@ -1367,12 +1406,12 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
         }
     }
 
-    let header_xml = if let Some(ref img_url) = header_img_url {
+    let header_xml = if let Some(ref fname) = header_img_filename {
         format!(
             r#"        <running-header>
-          <center><img src="{}" style="max-height: 25mm;" /></center>
+          <center><img src="{}" style="max-height: 25mm; max-width: 100%;" /></center>
         </running-header>"#,
-            img_url
+            fname
         )
     } else {
         r#"        <running-header>
@@ -1381,12 +1420,13 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
         </running-header>"#.to_string()
     };
 
-    let footer_xml = if let Some(ref img_url) = footer_img_url {
+    let footer_xml = if let Some(ref fname) = footer_img_filename {
+        let bleed_attr = if footer_is_full_bleed { " class=\"full-bleed\"" } else { "" };
         format!(
             r#"        <running-footer>
-          <center><img src="{}" style="max-width: 100%;" /></center>
+          <center><img{} src="{}" style="width: 100%;" /></center>
         </running-footer>"#,
-            img_url
+            bleed_attr, fname
         )
     } else {
         r#"        <running-footer>
@@ -1429,70 +1469,124 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
         }
     );
 
+    let body_half_pts = font_size_counts
+        .iter()
+        .max_by_key(|&(_, count)| count)
+        .map(|(&sz, _)| sz)
+        .unwrap_or(28);
+
+    let body_pt = (body_half_pts as f32) / 2.0;
+
+    let mut sorted_larger_sizes: Vec<u32> = font_size_counts
+        .keys()
+        .copied()
+        .filter(|&sz| sz > body_half_pts)
+        .collect();
+    sorted_larger_sizes.sort_unstable();
+
+    let h1_pt = sorted_larger_sizes.pop().map(|sz| (sz as f32) / 2.0).unwrap_or(body_pt + 4.0);
+    let h2_pt = sorted_larger_sizes.pop().map(|sz| (sz as f32) / 2.0).unwrap_or((body_pt + 2.0).min(h1_pt));
+    let h3_pt = body_pt;
+
     let primary_font = font_counts
         .into_iter()
         .max_by_key(|&(_, count)| count)
         .map(|(name, _)| name)
-        .unwrap_or_else(|| "Inter, system-ui, sans-serif".to_string());
+        .unwrap_or_else(|| "Times New Roman".to_string());
+
+    let font_family_stack = {
+        let lower = primary_font.to_lowercase();
+        if lower.contains("times")
+            || lower.contains("serif")
+            || lower.contains("georgia")
+            || lower.contains("garamond")
+            || lower.contains("cambria")
+        {
+            format!("\"{}\", Times, serif", primary_font)
+        } else if lower.contains("consolas")
+            || lower.contains("courier")
+            || lower.contains("mono")
+        {
+            format!("\"{}\", Consolas, monospace", primary_font)
+        } else {
+            format!("\"{}\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif", primary_font)
+        }
+    };
+
+    let primary_color = font_color_counts
+        .into_iter()
+        .max_by_key(|&(_, count)| count)
+        .map(|(c, _)| c)
+        .unwrap_or_else(|| "#000000".to_string());
 
     let dcss = format!(
         r#"/* Generated by Pagina OpenXML Reverse Engine */
 body {{
-  font-family: "{primary_font}", system-ui, sans-serif;
-  color: #334155;
+  font-family: {font_family_stack};
+  font-size: {body_pt}pt;
+  color: {primary_color};
+  line-height: 1.35;
 }}
 
 h1 {{
-  font-size: 24pt;
+  font-family: {font_family_stack};
+  font-size: {h1_pt}pt;
   font-weight: bold;
-  color: #1e3a8a;
-  margin-bottom: 5mm;
+  color: {primary_color};
+  margin-top: 4mm;
+  margin-bottom: 2.5mm;
 }}
 
 h2 {{
-  font-size: 16pt;
+  font-family: {font_family_stack};
+  font-size: {h2_pt}pt;
   font-weight: bold;
-  color: #0f172a;
-  margin-top: 6mm;
-  margin-bottom: 3mm;
-}}
-
-h3 {{
-  font-size: 12pt;
-  font-weight: 600;
-  color: #1e293b;
+  color: {primary_color};
+  margin-top: 3.5mm;
   margin-bottom: 2mm;
 }}
 
+h3 {{
+  font-family: {font_family_stack};
+  font-size: {h3_pt}pt;
+  font-weight: bold;
+  color: {primary_color};
+  margin-top: 3mm;
+  margin-bottom: 1.5mm;
+}}
+
 p {{
-  font-size: 10.5pt;
-  line-height: 1.6;
-  color: #334155;
-  margin-bottom: 3.5mm;
+  font-family: {font_family_stack};
+  font-size: {body_pt}pt;
+  line-height: 1.35;
+  color: {primary_color};
+  margin-bottom: 2.5mm;
 }}
 
 p.lead {{
-  font-size: 12pt;
-  color: #475569;
+  font-size: {lead_pt}pt;
+  color: {primary_color};
 }}
 
 blockquote {{
   margin-left: 6mm;
   padding-left: 4mm;
   border-left: 3px solid #cbd5e1;
-  color: #475569;
+  color: {primary_color};
   margin-bottom: 4mm;
 }}
 
 ul, ol {{
   padding-left: 24px;
   margin-top: 2mm;
-  margin-bottom: 3.5mm;
+  margin-bottom: 2.5mm;
 }}
 
 li {{
+  font-family: {font_family_stack};
+  font-size: {body_pt}pt;
   margin-bottom: 1.5mm;
-  line-height: 1.6;
+  line-height: 1.35;
 }}
 
 .callout {{
@@ -1519,31 +1613,44 @@ code {{
 }}
 
 table {{
+  font-family: {font_family_stack};
+  font-size: {body_pt}pt;
   width: 100%;
   border-collapse: collapse;
-  margin: 4mm 0;
+  margin: 3mm 0;
 }}
 
-th, td {{
-  border: 1px solid #cbd5e1;
-  padding: 2.5mm 3.5mm;
-  text-align: left;
-}}
-
-th {{
-  background-color: #f8fafc;
-  font-weight: bold;
-}}
-
-table.borderless, table.borderless th, table.borderless td {{
+table.borderless {{
   border: none !important;
-  background: transparent !important;
 }}
 
 table.align-right {{
   margin-left: auto !important;
   margin-right: 0 !important;
-  width: 45% !important;
+  width: 48% !important;
+}}
+
+th, td {{
+  font-family: {font_family_stack};
+  font-size: {body_pt}pt;
+  padding: 1.5mm 3mm;
+  line-height: 1.3;
+}}
+
+th {{
+  border: 1px solid #cbd5e1;
+  background-color: #f8fafc;
+  font-weight: bold;
+}}
+
+td {{
+  border: 1px solid #cbd5e1;
+}}
+
+table.borderless td,
+table.borderless th {{
+  border: none !important;
+  background: transparent !important;
 }}
 
 p[align="center"], h1[align="center"], h2[align="center"] {{
@@ -1558,10 +1665,16 @@ p[align="justify"] {{
   text-align: justify;
 }}
 "#,
-        primary_font = primary_font
+        font_family_stack = font_family_stack,
+        body_pt = body_pt,
+        h1_pt = h1_pt,
+        h2_pt = h2_pt,
+        h3_pt = h3_pt,
+        lead_pt = body_pt + 1.0,
+        primary_color = primary_color
     );
 
-    Ok(ImportResult { dxml, dcss })
+    Ok(ImportResult { dxml, dcss, assets })
 }
 
 fn escape_xml(s: &str) -> String {

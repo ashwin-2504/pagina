@@ -34,6 +34,7 @@ struct ImportResponse {
     success: bool,
     dxml: Option<String>,
     dcss: Option<String>,
+    assets: Option<std::collections::HashMap<String, String>>,
     error: Option<String>,
 }
 
@@ -148,12 +149,14 @@ async fn import_docx_handler(body: Bytes) -> Result<Json<ImportResponse>, (Statu
             success: true,
             dxml: Some(res.dxml),
             dcss: Some(res.dcss),
+            assets: Some(res.assets),
             error: None,
         })),
         Err(e) => Ok(Json(ImportResponse {
             success: false,
             dxml: None,
             dcss: None,
+            assets: None,
             error: Some(format!("Failed to parse DOCX: {}", e)),
         })),
     }
@@ -169,12 +172,14 @@ async fn import_pdf_handler(body: Bytes) -> Result<Json<ImportResponse>, (Status
             success: true,
             dxml: Some(res.dxml),
             dcss: Some(res.dcss),
+            assets: Some(res.assets),
             error: None,
         })),
         Err(e) => Ok(Json(ImportResponse {
             success: false,
             dxml: None,
             dcss: None,
+            assets: None,
             error: Some(format!("Failed to parse PDF: {}", e)),
         })),
     }

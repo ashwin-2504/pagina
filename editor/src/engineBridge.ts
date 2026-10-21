@@ -18,6 +18,7 @@ export interface EngineStatus {
 export interface ImportResult {
   dxml: string;
   dcss: string;
+  assets?: Record<string, string>;
 }
 
 /**
@@ -144,5 +145,6 @@ export async function importDocument(file: File): Promise<ImportResult> {
   return {
     dxml: result.dxml,
     dcss: result.dcss || '',
+    assets: result.assets || {},
   };
 }

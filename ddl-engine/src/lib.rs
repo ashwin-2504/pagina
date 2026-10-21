@@ -4,12 +4,15 @@ pub mod docx;
 pub mod pdf;
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportResult {
     pub dxml: String,
     pub dcss: String,
+    #[serde(default)]
+    pub assets: HashMap<String, String>,
 }
 
 #[wasm_bindgen]
@@ -162,6 +165,12 @@ mod tests {
         assert!(result.dxml.contains("<img"));
         assert!(result.dxml.contains("Dr. S. K. Korde"));
         assert!(result.dcss.contains("table {"));
+        assert!(result.assets.contains_key("image1.png") || result.assets.contains_key("image2.png"), "Media assets must be extracted");
+        assert!(!result.dxml.contains("data:image/"), "DXML must not contain raw base64 data URLs");
+        assert!(result.dcss.contains("Times New Roman"), "DCSS must contain Times New Roman font");
+        assert!(result.dcss.contains("14pt"), "DCSS must contain accurate 14pt sizing");
+        println!("Extracted assets: {:?}", result.assets.keys().collect::<Vec<_>>());
+        println!("DCSS snippet:\n{}", &result.dcss[..result.dcss.len().min(400)]);
         let ul_count = result.dxml.matches("<ul").count();
         let ol_count = result.dxml.matches("<ol").count();
         let li_count = result.dxml.matches("<li").count();

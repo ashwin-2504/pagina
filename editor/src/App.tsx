@@ -48,6 +48,7 @@ export function App() {
   // Multi-file state
   const [files, setFiles] = useState<ProjectFile[]>(INITIAL_FILES);
   const [activeFileId, setActiveFileId] = useState<string>(INITIAL_FILES[0].id);
+  const [assets, setAssets] = useState<Record<string, string>>({});
 
   const [parsedDoc, setParsedDoc] = useState<ParsedDocument | null>(null);
   const [errorInfo, setErrorInfo] = useState<any>(null);
@@ -250,7 +251,14 @@ export function App() {
       if (!dataUrl) return;
 
       const altName = file.name.replace(/\.[^/.]+$/, '');
-      const snippet = `\n<div align="center" style="margin: 4mm 0;">\n  <img src="${dataUrl}" alt="${altName}" style="max-width: 100%; height: auto;" />\n</div>\n`;
+      const assetFileName = file.name.replace(/\s+/g, '_');
+
+      setAssets(prev => ({
+        ...prev,
+        [assetFileName]: dataUrl,
+      }));
+
+      const snippet = `\n<div align="center" style="margin: 4mm 0;">\n  <img src="${assetFileName}" alt="${altName}" style="max-width: 100%; height: auto;" />\n</div>\n`;
 
       if (editorRef.current) {
         const selection = editorRef.current.getSelection();
@@ -280,7 +288,12 @@ export function App() {
     setIsExporting(true);
 
     try {
-      const blob = await exportDocument(format, mainDocFile.content);
+      let exportDdl = mainDocFile.content;
+      for (const [name, dataUrl] of Object.entries(assets)) {
+        exportDdl = exportDdl.replaceAll(`src="${name}"`, `src="${dataUrl}"`);
+        exportDdl = exportDdl.replaceAll(`src='${name}'`, `src='${dataUrl}'`);
+      }
+      const blob = await exportDocument(format, exportDdl);
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -313,6 +326,9 @@ export function App() {
 
     try {
       const result = await importDocument(file);
+      if (result.assets) {
+        setAssets(result.assets);
+      }
 
       const newFiles: ProjectFile[] = [
         {
@@ -761,7 +777,7 @@ export function App() {
                   transformOrigin: 'top center',
                   transition: 'transform 0.08s ease-out',
                 }}>
-                  <DocumentRenderer doc={parsedDoc} error={errorInfo} />
+                  <DocumentRenderer doc={parsedDoc} error={errorInfo} assets={assets} />
                 </div>
               </div>
             </div>

@@ -208,13 +208,24 @@ fn load_image_bytes(src: &str) -> Option<Vec<u8>> {
     if src.starts_with("data:image/") {
         if let Some(pos) = src.find(',') {
             let b64 = &src[pos + 1..];
-            base64::engine::general_purpose::STANDARD.decode(b64.trim()).ok()
-        } else {
-            None
+            return base64::engine::general_purpose::STANDARD.decode(b64.trim()).ok();
         }
-    } else {
-        std::fs::read(src).ok()
     }
+    if let Ok(bytes) = std::fs::read(src) {
+        return Some(bytes);
+    }
+    for prefix in &["assets/", "media/", "../", "../media/", "word/media/"] {
+        let candidate = format!("{}{}", prefix, src);
+        if let Ok(bytes) = std::fs::read(&candidate) {
+            return Some(bytes);
+        }
+    }
+    if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(src.trim()) {
+        if !bytes.is_empty() {
+            return Some(bytes);
+        }
+    }
+    None
 }
 
 fn draw_image_on_layer(
@@ -255,7 +266,7 @@ fn draw_running_header_footer(
     page_num: usize,
     left_margin: f32,
     content_width: f32,
-    _width_mm: f32,
+    width_mm: f32,
     height_mm: f32,
     font_reg: &IndirectFontRef,
     doc: &Document,
@@ -278,9 +289,10 @@ fn draw_running_header_footer(
                 if let Ok(dyn_img) = ::image::load_from_memory(&bytes) {
                     let px_w = dyn_img.width() as f32;
                     let px_h = dyn_img.height() as f32;
-                    let aspect = px_h / px_w;
-                    let target_w = content_width.min(170.0);
-                    let target_h = (target_w * aspect).min(25.0);
+                    let aspect = if px_w > 0.0 { px_h / px_w } else { 0.2 };
+                    let max_target_h = 28.0_f32;
+                    let target_w = content_width.min(max_target_h / aspect);
+                    let target_h = target_w * aspect;
                     let img_x = left_margin + (content_width - target_w) / 2.0;
                     let img_y = height_mm - target_h - 4.0;
                     draw_image_on_layer(layer, &dyn_img, img_x, img_y, target_w, target_h);
@@ -356,12 +368,24 @@ fn draw_running_header_footer(
                 if let Ok(dyn_img) = ::image::load_from_memory(&bytes) {
                     let px_w = dyn_img.width() as f32;
                     let px_h = dyn_img.height() as f32;
-                    let aspect = px_h / px_w;
-                    let target_w = content_width.min(180.0);
-                    let target_h = (target_w * aspect).min(24.0);
-                    let img_x = left_margin + (content_width - target_w) / 2.0;
-                    let img_y = 5.0;
-                    draw_image_on_layer(layer, &dyn_img, img_x, img_y, target_w, target_h);
+                    let aspect = if px_w > 0.0 { px_h / px_w } else { 0.15 };
+                    let is_full_bleed = img_el.classes.iter().any(|c| c == "full-bleed")
+                        || aspect < 0.22
+                        || img_el.inline_styles.get("width").map(|s| s.contains("100%")).unwrap_or(false);
+
+                    if is_full_bleed {
+                        let target_w = width_mm;
+                        let target_h = target_w * aspect;
+                        let img_x = 0.0;
+                        let img_y = 0.0;
+                        draw_image_on_layer(layer, &dyn_img, img_x, img_y, target_w, target_h);
+                    } else {
+                        let target_w = content_width.min(180.0);
+                        let target_h = (target_w * aspect).min(24.0);
+                        let img_x = left_margin + (content_width - target_w) / 2.0;
+                        let img_y = 5.0;
+                        draw_image_on_layer(layer, &dyn_img, img_x, img_y, target_w, target_h);
+                    }
                     drew_footer_image = true;
                 }
             }
