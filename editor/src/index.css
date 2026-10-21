@@ -36,6 +36,42 @@ html, body, #root {
   margin: 0;
 }
 
+/* Document List Styling */
+.ddl-paper ul {
+  list-style-position: outside;
+  padding-left: 24px;
+  margin-top: 2mm;
+  margin-bottom: 3.5mm;
+  list-style-type: disc;
+}
+.ddl-paper ul[type="disc"], .ddl-paper ul[data-type="disc"] { list-style-type: disc; }
+.ddl-paper ul[type="circle"], .ddl-paper ul[data-type="circle"] { list-style-type: circle; }
+.ddl-paper ul[type="square"], .ddl-paper ul[data-type="square"] { list-style-type: square; }
+.ddl-paper ul[type="dash"], .ddl-paper ul[data-type="dash"] { list-style-type: "- "; }
+.ddl-paper ul[type="none"], .ddl-paper ul[data-type="none"] { list-style-type: none; }
+
+.ddl-paper ol {
+  list-style-position: outside;
+  padding-left: 24px;
+  margin-top: 2mm;
+  margin-bottom: 3.5mm;
+  list-style-type: decimal;
+}
+.ddl-paper ol[type="1"], .ddl-paper ol[type="decimal"], .ddl-paper ol[data-type="1"], .ddl-paper ol[data-type="decimal"] { list-style-type: decimal; }
+.ddl-paper ol[type="a"], .ddl-paper ol[type="lower-alpha"], .ddl-paper ol[data-type="a"], .ddl-paper ol[data-type="lower-alpha"] { list-style-type: lower-alpha; }
+.ddl-paper ol[type="A"], .ddl-paper ol[type="upper-alpha"], .ddl-paper ol[data-type="A"], .ddl-paper ol[data-type="upper-alpha"] { list-style-type: upper-alpha; }
+.ddl-paper ol[type="i"], .ddl-paper ol[type="lower-roman"], .ddl-paper ol[data-type="i"], .ddl-paper ol[data-type="lower-roman"] { list-style-type: lower-roman; }
+.ddl-paper ol[type="I"], .ddl-paper ol[type="upper-roman"], .ddl-paper ol[data-type="I"], .ddl-paper ol[data-type="upper-roman"] { list-style-type: upper-roman; }
+
+.ddl-paper li {
+  margin-bottom: 1.5mm;
+  line-height: 1.6;
+}
+.ddl-paper li p {
+  display: inline;
+  margin: 0;
+}
+
 /* High-Fidelity Vector PDF Printing */
 @media print {
   @page {

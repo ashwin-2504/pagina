@@ -97,6 +97,117 @@ fn detect_bullet_item(trimmed: &str) -> Option<(&'static str, String)> {
     None
 }
 
+fn strip_bullet_prefix(text: &str) -> String {
+    let trimmed = text.trim();
+
+    // 1. Direct bullet prefixes
+    for b in &["•", "\u{2022}", "◦", "\u{25E6}", "▪", "\u{25AA}", "■", "–", "—", "- "] {
+        if let Some(rest) = trimmed.strip_prefix(b) {
+            return rest.trim_start().to_string();
+        }
+    }
+
+    // 2. Formatted bullet prefixes like <b>• </b> or <strong>• </strong>
+    for (start_tag, end_tag) in &[("<b>", "</b>"), ("<strong>", "</strong>"), ("<i>", "</i>"), ("<em>", "</em>")] {
+        if let Some(rest) = trimmed.strip_prefix(start_tag) {
+            for b in &["•", "\u{2022}", "◦", "\u{25E6}", "▪", "\u{25AA}", "■", "–", "—", "-"] {
+                let with_space = format!("{} ", b);
+                let variations = [with_space.as_str(), *b];
+                for var in &variations {
+                    if let Some(after_b) = rest.strip_prefix(var) {
+                        let after_trimmed = after_b.trim_start();
+                        if let Some(after_end) = after_trimmed.strip_prefix(end_tag) {
+                            return after_end.trim_start().to_string();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    trimmed.to_string()
+}
+
+fn is_number_prefix_token(s: &str) -> bool {
+    let t = s.trim();
+    if t.is_empty() {
+        return false;
+    }
+    if t.chars().all(|c| c.is_ascii_digit()) {
+        return true;
+    }
+    if let Some(first) = t.chars().next() {
+        if first.is_ascii_digit() {
+            let rest = t.trim_start_matches(|c: char| c.is_ascii_digit());
+            if rest == "." || rest == ")" || rest == ".-" || rest == "-" {
+                return true;
+            }
+        }
+    }
+    if (t.len() == 2 || t.len() == 3)
+        && t.chars().next().map(|c| c.is_ascii_alphabetic()).unwrap_or(false)
+        && (t.ends_with('.') || t.ends_with(')'))
+    {
+        return true;
+    }
+    let roman = [
+        "i.", "ii.", "iii.", "iv.", "v.", "vi.", "vii.", "viii.", "ix.", "x.",
+        "i)", "ii)", "iii)", "iv)", "v)",
+        "I.", "II.", "III.", "IV.", "V.", "VI.", "VII.", "VIII.", "IX.", "X.",
+        "I)", "II)", "III)", "IV)", "V)",
+    ];
+    roman.contains(&t)
+}
+
+fn strip_number_prefix(text: &str) -> String {
+    let trimmed = text.trim();
+
+    // 1. Formatted number prefixes like <b>1. </b> or <strong>1. </strong>
+    for (start_tag, end_tag) in &[("<b>", "</b>"), ("<strong>", "</strong>"), ("<i>", "</i>"), ("<em>", "</em>")] {
+        if let Some(rest) = trimmed.strip_prefix(start_tag) {
+            if let Some(end_idx) = rest.find(end_tag) {
+                let inner = &rest[..end_idx];
+                let after_tag = &rest[end_idx + end_tag.len()..];
+                if is_number_prefix_token(inner.trim()) {
+                    return after_tag.trim_start().to_string();
+                }
+            }
+        }
+    }
+
+    // 2. Direct decimal prefix
+    if let Some(first) = trimmed.chars().next() {
+        if first.is_ascii_digit() {
+            let rest = trimmed.trim_start_matches(|c: char| c.is_ascii_digit());
+            if let Some(content) = rest.strip_prefix(". ")
+                .or_else(|| rest.strip_prefix(") "))
+                .or_else(|| rest.strip_prefix(" - "))
+            {
+                return content.trim_start().to_string();
+            }
+        }
+    }
+
+    // 3. Alpha prefixes
+    let chars: Vec<char> = trimmed.chars().collect();
+    if chars.len() >= 3 && chars[0].is_ascii_alphabetic() && (chars[1] == '.' || chars[1] == ')') && chars[2].is_whitespace() {
+        return trimmed[3..].trim_start().to_string();
+    }
+
+    // 4. Roman numeral prefixes
+    let roman_prefixes = [
+        "i. ", "ii. ", "iii. ", "iv. ", "v. ", "vi. ", "vii. ", "viii. ", "ix. ", "x. ",
+        "I. ", "II. ", "III. ", "IV. ", "V. ", "VI. ", "VII. ", "VIII. ", "IX. ", "X. ",
+    ];
+    for p in &roman_prefixes {
+        if trimmed.starts_with(p) {
+            return trimmed[p.len()..].trim_start().to_string();
+        }
+    }
+
+    trimmed.to_string()
+}
+
 fn detect_number_item(trimmed: &str) -> Option<(&'static str, String)> {
     if let Some(first) = trimmed.chars().next() {
         if first.is_ascii_digit() {
@@ -128,8 +239,171 @@ fn detect_number_item(trimmed: &str) -> Option<(&'static str, String)> {
     None
 }
 
+#[derive(Debug, Clone)]
+enum ListFormat {
+    Bullet(String), // "disc", "circle", "square", "dash"
+    Number(String), // "1", "a", "A", "i", "I"
+}
+
+#[derive(Default)]
+struct NumberingInfo {
+    num_to_abstract: std::collections::HashMap<String, String>,
+    abstract_lvl_format: std::collections::HashMap<(String, u32), ListFormat>,
+}
+
+fn parse_numbering_xml(xml: &str) -> NumberingInfo {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(false);
+
+    let mut num_to_abstract = std::collections::HashMap::new();
+    let mut abstract_lvl_format = std::collections::HashMap::new();
+
+    let mut current_abstract_num_id: Option<String> = None;
+    let mut current_ilvl: Option<u32> = None;
+    let mut current_num_id: Option<String> = None;
+    let mut current_num_fmt: Option<String> = None;
+    let mut current_lvl_text: Option<String> = None;
+
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+                let name = e.name();
+                match name.as_ref() {
+                    b"w:abstractNum" => {
+                        current_abstract_num_id = None;
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:abstractNumId" {
+                                if let Ok(val) = std::str::from_utf8(&attr.value) {
+                                    current_abstract_num_id = Some(val.to_string());
+                                }
+                            }
+                        }
+                    }
+                    b"w:lvl" => {
+                        current_ilvl = None;
+                        current_num_fmt = None;
+                        current_lvl_text = None;
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:ilvl" {
+                                if let Ok(val) = std::str::from_utf8(&attr.value) {
+                                    current_ilvl = val.parse::<u32>().ok();
+                                }
+                            }
+                        }
+                    }
+                    b"w:numFmt" => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:val" {
+                                if let Ok(val) = std::str::from_utf8(&attr.value) {
+                                    current_num_fmt = Some(val.to_string());
+                                }
+                            }
+                        }
+                    }
+                    b"w:lvlText" => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:val" {
+                                if let Ok(val) = std::str::from_utf8(&attr.value) {
+                                    current_lvl_text = Some(val.to_string());
+                                }
+                            }
+                        }
+                    }
+                    b"w:num" => {
+                        current_num_id = None;
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:numId" {
+                                if let Ok(val) = std::str::from_utf8(&attr.value) {
+                                    current_num_id = Some(val.to_string());
+                                }
+                            }
+                        }
+                    }
+                    b"w:abstractNumId" => {
+                        if let Some(ref nid) = current_num_id {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.as_ref() == b"w:val" {
+                                    if let Ok(val) = std::str::from_utf8(&attr.value) {
+                                        num_to_abstract.insert(nid.clone(), val.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::End(ref e)) => {
+                let name = e.name();
+                match name.as_ref() {
+                    b"w:lvl" => {
+                        if let (Some(aid), Some(ilvl)) = (&current_abstract_num_id, current_ilvl) {
+                            let fmt = match current_num_fmt.as_deref().unwrap_or("bullet") {
+                                "bullet" => {
+                                    let b_type = match current_lvl_text.as_deref() {
+                                        Some(txt) if txt.contains('o') || txt.contains('◦') => "circle",
+                                        Some(txt) if txt.contains('▪') || txt.contains('■') || txt.contains('§') => "square",
+                                        Some(txt) if txt.contains('–') || txt.contains('-') => "dash",
+                                        _ => "disc",
+                                    };
+                                    ListFormat::Bullet(b_type.to_string())
+                                }
+                                "decimal" => ListFormat::Number("1".to_string()),
+                                "lowerLetter" => ListFormat::Number("a".to_string()),
+                                "upperLetter" => ListFormat::Number("A".to_string()),
+                                "lowerRoman" => ListFormat::Number("i".to_string()),
+                                "upperRoman" => ListFormat::Number("I".to_string()),
+                                other => {
+                                    if other.to_lowercase().contains("bullet") {
+                                        ListFormat::Bullet("disc".to_string())
+                                    } else {
+                                        ListFormat::Number("1".to_string())
+                                    }
+                                }
+                            };
+                            abstract_lvl_format.insert((aid.clone(), ilvl), fmt);
+                        }
+                        current_ilvl = None;
+                        current_num_fmt = None;
+                        current_lvl_text = None;
+                    }
+                    b"w:abstractNum" => {
+                        current_abstract_num_id = None;
+                    }
+                    b"w:num" => {
+                        current_num_id = None;
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    NumberingInfo {
+        num_to_abstract,
+        abstract_lvl_format,
+    }
+}
+
 pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Error + Send + Sync>> {
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
+
+    let numbering_info = {
+        let mut num_xml = String::new();
+        if let Ok(mut file) = archive.by_name("word/numbering.xml") {
+            let _ = file.read_to_string(&mut num_xml);
+        }
+        if !num_xml.is_empty() {
+            parse_numbering_xml(&num_xml)
+        } else {
+            NumberingInfo::default()
+        }
+    };
 
     let mut doc_xml = String::new();
     {
@@ -145,6 +419,8 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
     let mut current_p_style: Option<String> = None;
     let mut current_p_align: Option<String> = None;
     let mut current_p_is_callout = false;
+    let mut current_p_num_id: Option<String> = None;
+    let mut current_p_ilvl: u32 = 0;
     let mut current_p_tokens: Vec<InlineToken> = Vec::new();
     let mut font_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
 
@@ -191,7 +467,27 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
                         current_p_style = None;
                         current_p_align = None;
                         current_p_is_callout = false;
+                        current_p_num_id = None;
+                        current_p_ilvl = 0;
                         current_p_tokens.clear();
+                    }
+                    b"w:numId" => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:val" {
+                                if let Ok(val) = std::str::from_utf8(&attr.value) {
+                                    current_p_num_id = Some(val.to_string());
+                                }
+                            }
+                        }
+                    }
+                    b"w:ilvl" => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:val" {
+                                if let Ok(val) = std::str::from_utf8(&attr.value) {
+                                    current_p_ilvl = val.parse::<u32>().unwrap_or(0);
+                                }
+                            }
+                        }
                     }
                     b"w:pPr" => {
                         in_p_pr = true;
@@ -220,6 +516,24 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
                             if attr.key.as_ref() == b"w:val" {
                                 if let Ok(val) = std::str::from_utf8(&attr.value) {
                                     current_p_style = Some(val.to_string());
+                                }
+                            }
+                        }
+                    }
+                    b"w:numId" => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:val" {
+                                if let Ok(val) = std::str::from_utf8(&attr.value) {
+                                    current_p_num_id = Some(val.to_string());
+                                }
+                            }
+                        }
+                    }
+                    b"w:ilvl" => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:val" {
+                                if let Ok(val) = std::str::from_utf8(&attr.value) {
+                                    current_p_ilvl = val.parse::<u32>().unwrap_or(0);
                                 }
                             }
                         }
@@ -440,6 +754,20 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
                             let style_lower = current_p_style.as_deref().unwrap_or("").to_lowercase();
                             let align = current_p_align.clone();
 
+                            let list_format_opt = if let Some(ref nid) = current_p_num_id {
+                                if nid != "0" {
+                                    if let Some(abs_id) = numbering_info.num_to_abstract.get(nid) {
+                                        numbering_info.abstract_lvl_format.get(&(abs_id.clone(), current_p_ilvl)).cloned()
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+
                             if in_tbl {
                                 current_cell_paragraphs.push(formatted_line);
                             } else if current_p_is_callout || style_lower.contains("callout") {
@@ -450,47 +778,135 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
                                 blocks.push(ImportedBlock::Heading(2, align, formatted_line));
                             } else if style_lower.contains("heading 3") || style_lower == "3" || style_lower == "heading3" {
                                 blocks.push(ImportedBlock::Heading(3, align, formatted_line));
-                            } else if style_lower.contains("listbullet") {
-                                let (b_type, clean_text) = detect_bullet_item(trimmed).unwrap_or(("disc", formatted_line.clone()));
-                                if let Some(ImportedBlock::BulletList(cur_type, items)) = blocks.last_mut() {
-                                    if cur_type == b_type {
-                                        items.push(clean_text);
+                            } else if let Some(fmt) = list_format_opt {
+                                match fmt {
+                                    ListFormat::Bullet(b_type) => {
+                                        let clean_text = strip_bullet_prefix(trimmed);
+                                        if let Some(ImportedBlock::BulletList(cur_type, items)) = blocks.last_mut() {
+                                            if cur_type == &b_type {
+                                                items.push(clean_text);
+                                            } else {
+                                                blocks.push(ImportedBlock::BulletList(b_type, vec![clean_text]));
+                                            }
+                                        } else {
+                                            blocks.push(ImportedBlock::BulletList(b_type, vec![clean_text]));
+                                        }
+                                    }
+                                    ListFormat::Number(n_type) => {
+                                        let clean_text = strip_number_prefix(trimmed);
+                                        if let Some(ImportedBlock::NumberList(cur_type, items)) = blocks.last_mut() {
+                                            if cur_type == &n_type {
+                                                items.push(clean_text);
+                                            } else {
+                                                blocks.push(ImportedBlock::NumberList(n_type, vec![clean_text]));
+                                            }
+                                        } else {
+                                            blocks.push(ImportedBlock::NumberList(n_type, vec![clean_text]));
+                                        }
+                                    }
+                                }
+                            } else if current_p_num_id.is_some() && current_p_num_id.as_deref() != Some("0") {
+                                if style_lower.contains("bullet") {
+                                    let clean_text = strip_bullet_prefix(trimmed);
+                                    if let Some(ImportedBlock::BulletList(cur_type, items)) = blocks.last_mut() {
+                                        if cur_type == "disc" {
+                                            items.push(clean_text);
+                                        } else {
+                                            blocks.push(ImportedBlock::BulletList("disc".to_string(), vec![clean_text]));
+                                        }
                                     } else {
-                                        blocks.push(ImportedBlock::BulletList(b_type.to_string(), vec![clean_text]));
+                                        blocks.push(ImportedBlock::BulletList("disc".to_string(), vec![clean_text]));
+                                    }
+                                } else if style_lower.contains("number") || style_lower.contains("decimal") {
+                                    let clean_text = strip_number_prefix(trimmed);
+                                    if let Some(ImportedBlock::NumberList(cur_type, items)) = blocks.last_mut() {
+                                        if cur_type == "1" {
+                                            items.push(clean_text);
+                                        } else {
+                                            blocks.push(ImportedBlock::NumberList("1".to_string(), vec![clean_text]));
+                                        }
+                                    } else {
+                                        blocks.push(ImportedBlock::NumberList("1".to_string(), vec![clean_text]));
+                                    }
+                                } else if let Some((b_type, clean_text)) = detect_bullet_item(trimmed) {
+                                    let final_text = strip_bullet_prefix(&clean_text);
+                                    if let Some(ImportedBlock::BulletList(cur_type, items)) = blocks.last_mut() {
+                                        if cur_type == b_type {
+                                            items.push(final_text);
+                                        } else {
+                                            blocks.push(ImportedBlock::BulletList(b_type.to_string(), vec![final_text]));
+                                        }
+                                    } else {
+                                        blocks.push(ImportedBlock::BulletList(b_type.to_string(), vec![final_text]));
+                                    }
+                                } else if let Some((n_type, clean_text)) = detect_number_item(trimmed) {
+                                    let final_text = strip_number_prefix(&clean_text);
+                                    if let Some(ImportedBlock::NumberList(cur_type, items)) = blocks.last_mut() {
+                                        if cur_type == n_type {
+                                            items.push(final_text);
+                                        } else {
+                                            blocks.push(ImportedBlock::NumberList(n_type.to_string(), vec![final_text]));
+                                        }
+                                    } else {
+                                        blocks.push(ImportedBlock::NumberList(n_type.to_string(), vec![final_text]));
                                     }
                                 } else {
-                                    blocks.push(ImportedBlock::BulletList(b_type.to_string(), vec![clean_text]));
+                                    let clean_text = strip_bullet_prefix(trimmed);
+                                    if let Some(ImportedBlock::BulletList(cur_type, items)) = blocks.last_mut() {
+                                        if cur_type == "disc" {
+                                            items.push(clean_text);
+                                        } else {
+                                            blocks.push(ImportedBlock::BulletList("disc".to_string(), vec![clean_text]));
+                                        }
+                                    } else {
+                                        blocks.push(ImportedBlock::BulletList("disc".to_string(), vec![clean_text]));
+                                    }
+                                }
+                            } else if style_lower.contains("listbullet") {
+                                let clean_text = strip_bullet_prefix(trimmed);
+                                let (b_type, text_to_use) = detect_bullet_item(&clean_text).unwrap_or(("disc", clean_text));
+                                if let Some(ImportedBlock::BulletList(cur_type, items)) = blocks.last_mut() {
+                                    if cur_type == b_type {
+                                        items.push(text_to_use);
+                                    } else {
+                                        blocks.push(ImportedBlock::BulletList(b_type.to_string(), vec![text_to_use]));
+                                    }
+                                } else {
+                                    blocks.push(ImportedBlock::BulletList(b_type.to_string(), vec![text_to_use]));
                                 }
                             } else if style_lower.contains("listnumber") || style_lower.contains("numbered") {
-                                let (n_type, clean_text) = detect_number_item(trimmed).unwrap_or(("1", formatted_line.clone()));
+                                let clean_text = strip_number_prefix(trimmed);
+                                let (n_type, text_to_use) = detect_number_item(&clean_text).unwrap_or(("1", clean_text));
                                 if let Some(ImportedBlock::NumberList(cur_type, items)) = blocks.last_mut() {
                                     if cur_type == n_type {
-                                        items.push(clean_text);
+                                        items.push(text_to_use);
                                     } else {
-                                        blocks.push(ImportedBlock::NumberList(n_type.to_string(), vec![clean_text]));
+                                        blocks.push(ImportedBlock::NumberList(n_type.to_string(), vec![text_to_use]));
                                     }
                                 } else {
-                                    blocks.push(ImportedBlock::NumberList(n_type.to_string(), vec![clean_text]));
+                                    blocks.push(ImportedBlock::NumberList(n_type.to_string(), vec![text_to_use]));
                                 }
                             } else if let Some((b_type, clean_text)) = detect_bullet_item(trimmed) {
+                                let final_text = strip_bullet_prefix(&clean_text);
                                 if let Some(ImportedBlock::BulletList(cur_type, items)) = blocks.last_mut() {
                                     if cur_type == b_type {
-                                        items.push(clean_text);
+                                        items.push(final_text);
                                     } else {
-                                        blocks.push(ImportedBlock::BulletList(b_type.to_string(), vec![clean_text]));
+                                        blocks.push(ImportedBlock::BulletList(b_type.to_string(), vec![final_text]));
                                     }
                                 } else {
-                                    blocks.push(ImportedBlock::BulletList(b_type.to_string(), vec![clean_text]));
+                                    blocks.push(ImportedBlock::BulletList(b_type.to_string(), vec![final_text]));
                                 }
                             } else if let Some((n_type, clean_text)) = detect_number_item(trimmed) {
+                                let final_text = strip_number_prefix(&clean_text);
                                 if let Some(ImportedBlock::NumberList(cur_type, items)) = blocks.last_mut() {
                                     if cur_type == n_type {
-                                        items.push(clean_text);
+                                        items.push(final_text);
                                     } else {
-                                        blocks.push(ImportedBlock::NumberList(n_type.to_string(), vec![clean_text]));
+                                        blocks.push(ImportedBlock::NumberList(n_type.to_string(), vec![final_text]));
                                     }
                                 } else {
-                                    blocks.push(ImportedBlock::NumberList(n_type.to_string(), vec![clean_text]));
+                                    blocks.push(ImportedBlock::NumberList(n_type.to_string(), vec![final_text]));
                                 }
                             } else if style_lower.contains("quote") {
                                 blocks.push(ImportedBlock::Blockquote(formatted_line));
@@ -734,9 +1150,14 @@ blockquote {{
 }}
 
 ul, ol {{
-  margin-left: 6mm;
+  padding-left: 24px;
+  margin-top: 2mm;
   margin-bottom: 3.5mm;
-  padding-left: 2mm;
+}}
+
+li {{
+  margin-bottom: 1.5mm;
+  line-height: 1.6;
 }}
 
 .callout {{

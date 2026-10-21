@@ -423,6 +423,97 @@ const RenderElement: React.FC<{ el: ElementNode }> = ({ el }) => {
     );
   }
 
+  if (tagLower === 'ul') {
+    const listType = (attributes['type'] || inline_styles?.['list-style-type'] || 'disc').toLowerCase();
+    let cssListType = 'disc';
+    if (listType === 'circle') cssListType = 'circle';
+    else if (listType === 'square') cssListType = 'square';
+    else if (listType === 'dash') cssListType = '"- "';
+    else if (listType === 'none') cssListType = 'none';
+
+    return (
+      <ul
+        className={className}
+        data-type={listType}
+        style={{
+          listStyleType: cssListType,
+          listStylePosition: 'outside',
+          paddingLeft: '24px',
+          marginTop: '2mm',
+          marginBottom: '3.5mm',
+          textAlign: 'left',
+          ...styleObj,
+        }}
+        {...attributes}
+      >
+        <RenderChildren nodes={children} />
+      </ul>
+    );
+  }
+
+  if (tagLower === 'ol') {
+    const rawType = attributes['type'] || inline_styles?.['list-style-type'] || '1';
+    const listType = rawType.toLowerCase();
+    let cssListType = 'decimal';
+    let htmlType: '1' | 'a' | 'A' | 'i' | 'I' = '1';
+
+    if (rawType === 'A' || listType === 'upper-alpha') {
+      cssListType = 'upper-alpha';
+      htmlType = 'A';
+    } else if (rawType === 'I' || listType === 'upper-roman') {
+      cssListType = 'upper-roman';
+      htmlType = 'I';
+    } else if (listType === 'a' || listType === 'lower-alpha') {
+      cssListType = 'lower-alpha';
+      htmlType = 'a';
+    } else if (listType === 'i' || listType === 'lower-roman') {
+      cssListType = 'lower-roman';
+      htmlType = 'i';
+    } else if (listType === 'none') {
+      cssListType = 'none';
+    }
+
+    const startAttr = attributes['start'] ? parseInt(attributes['start'], 10) : undefined;
+
+    return (
+      <ol
+        className={className}
+        start={startAttr}
+        type={htmlType}
+        data-type={listType}
+        style={{
+          listStyleType: cssListType,
+          listStylePosition: 'outside',
+          paddingLeft: '24px',
+          marginTop: '2mm',
+          marginBottom: '3.5mm',
+          textAlign: 'left',
+          ...styleObj,
+        }}
+        {...attributes}
+      >
+        <RenderChildren nodes={children} />
+      </ol>
+    );
+  }
+
+  if (tagLower === 'li') {
+    return (
+      <li
+        className={className}
+        style={{
+          marginBottom: '1.5mm',
+          lineHeight: 1.6,
+          textAlign: 'left',
+          ...styleObj,
+        }}
+        {...attributes}
+      >
+        <RenderChildren nodes={children} />
+      </li>
+    );
+  }
+
   const validTags = new Set([
     'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
     'p', 'b', 'strong', 'i', 'em', 'u', 's', 'del', 'mark', 'sup', 'sub', 'small',

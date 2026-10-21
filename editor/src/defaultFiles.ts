@@ -101,6 +101,16 @@ p {
   font-size: 10.5pt;
 }
 
+ul, ol {
+  padding-left: 24px;
+  margin-bottom: 3.5mm;
+}
+
+li {
+  margin-bottom: 1.5mm;
+  line-height: 1.6;
+}
+
 .lead {
   font-size: 12pt;
   color: #475569;

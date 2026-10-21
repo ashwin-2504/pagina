@@ -160,6 +160,11 @@ mod tests {
         assert!(result.dxml.contains("<table>"));
         assert!(result.dxml.contains("Dr. S. K. Korde"));
         assert!(result.dcss.contains("table {"));
+        let ul_count = result.dxml.matches("<ul").count();
+        let ol_count = result.dxml.matches("<ol").count();
+        let li_count = result.dxml.matches("<li").count();
+        println!("EVA Synopsis DOCX Lists extracted -> ul: {}, ol: {}, li: {}", ul_count, ol_count, li_count);
+        assert!(ul_count > 0 || ol_count > 0, "Imported DOCX must extract bullet or numbered lists");
 
         // 2. Parse the produced DXML using Rust Parser
         let mut parser = parser::Parser::new(&result.dxml);

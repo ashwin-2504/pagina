@@ -457,15 +457,15 @@ blockquote {
 }
 
 ul, ol {
-  margin-left: 6mm;
+  padding-left: 24px;
+  margin-top: 2mm;
   margin-bottom: 3.5mm;
-  padding-left: 2mm;
   color: #334155;
 }
 
 li {
   margin-bottom: 1.5mm;
-  line-height: 1.5;
+  line-height: 1.6;
 }
 
 .callout {
