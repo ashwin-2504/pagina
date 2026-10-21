@@ -125,7 +125,8 @@ pub fn export_pdf(doc: &Document) -> Result<Vec<u8>, Box<dyn std::error::Error +
     let left_margin = margin_mm.max(12.0);
     let right_margin = margin_mm.max(12.0);
     let content_width = width_mm - left_margin - right_margin;
-    let (header_clearance, footer_clearance) = get_header_and_footer_heights(doc, width_mm, content_width);
+    let (header_clearance, footer_clearance) =
+        get_header_and_footer_heights(doc, width_mm, content_width);
     let top_margin = (margin_mm * 1.1).max(22.0).max(header_clearance);
     let bottom_margin = (margin_mm * 1.0).max(18.0).max(footer_clearance);
 
@@ -171,9 +172,11 @@ fn get_active_page_style(doc: &Document) -> Option<&PageStyle> {
     if let Some(ps) = doc.props.page_styles.get("body") {
         return Some(ps);
     }
-    doc.props.page_styles.values().find(|ps| ps.is_default).or_else(|| {
-        doc.props.page_styles.values().next()
-    })
+    doc.props
+        .page_styles
+        .values()
+        .find(|ps| ps.is_default)
+        .or_else(|| doc.props.page_styles.values().next())
 }
 
 fn extract_nodes_text(nodes: &[Node]) -> String {
@@ -209,7 +212,9 @@ fn load_image_bytes(src: &str) -> Option<Vec<u8>> {
     if src.starts_with("data:image/") {
         if let Some(pos) = src.find(',') {
             let b64 = &src[pos + 1..];
-            return base64::engine::general_purpose::STANDARD.decode(b64.trim()).ok();
+            return base64::engine::general_purpose::STANDARD
+                .decode(b64.trim())
+                .ok();
         }
     }
     if let Ok(bytes) = std::fs::read(src) {
@@ -287,7 +292,9 @@ fn get_header_and_footer_heights(doc: &Document, width_mm: f32, content_width: f
                     }
                 }
             }
-            if header_h == 0.0 && (!h.left.is_empty() || !h.center.is_empty() || !h.right.is_empty()) {
+            if header_h == 0.0
+                && (!h.left.is_empty() || !h.center.is_empty() || !h.right.is_empty())
+            {
                 header_h = 16.0;
             }
         }
@@ -305,7 +312,11 @@ fn get_header_and_footer_heights(doc: &Document, width_mm: f32, content_width: f
                             let aspect = if px_w > 0.0 { px_h / px_w } else { 0.15 };
                             let is_full_bleed = img_el.classes.iter().any(|c| c == "full-bleed")
                                 || aspect < 0.22
-                                || img_el.inline_styles.get("width").map(|s| s.contains("100%")).unwrap_or(false);
+                                || img_el
+                                    .inline_styles
+                                    .get("width")
+                                    .map(|s| s.contains("100%"))
+                                    .unwrap_or(false);
                             if is_full_bleed {
                                 let target_h = width_mm * aspect;
                                 footer_h = target_h + 6.0;
@@ -318,7 +329,9 @@ fn get_header_and_footer_heights(doc: &Document, width_mm: f32, content_width: f
                     }
                 }
             }
-            if footer_h == 0.0 && (!f.left.is_empty() || !f.center.is_empty() || !f.right.is_empty()) {
+            if footer_h == 0.0
+                && (!f.left.is_empty() || !f.center.is_empty() || !f.right.is_empty())
+            {
                 footer_h = 14.0;
             }
         }
@@ -340,13 +353,11 @@ fn draw_running_header_footer(
     let ps = get_active_page_style(doc);
 
     // 1. Check if running header contains an image
-    let header_img_opt = ps
-        .and_then(|p| p.running_header.as_ref())
-        .and_then(|h| {
-            find_img_in_nodes(&h.center)
-                .or_else(|| find_img_in_nodes(&h.left))
-                .or_else(|| find_img_in_nodes(&h.right))
-        });
+    let header_img_opt = ps.and_then(|p| p.running_header.as_ref()).and_then(|h| {
+        find_img_in_nodes(&h.center)
+            .or_else(|| find_img_in_nodes(&h.left))
+            .or_else(|| find_img_in_nodes(&h.right))
+    });
 
     let mut drew_header_image = false;
     if let Some(img_el) = header_img_opt {
@@ -395,7 +406,8 @@ fn draw_running_header_footer(
                 }
                 if !center_text.is_empty() {
                     let center_w = (center_text.len() as f32) * 8.5 * 0.19;
-                    let center_x = (left_margin + (content_width - center_w) / 2.0).max(left_margin);
+                    let center_x =
+                        (left_margin + (content_width - center_w) / 2.0).max(left_margin);
                     layer.use_text(&center_text, 8.5, Mm(center_x), Mm(header_y), font_reg);
                 }
                 if !display_right.is_empty() {
@@ -414,7 +426,10 @@ fn draw_running_header_footer(
                 layer.set_outline_thickness(0.5);
                 let points = vec![
                     (Point::new(Mm(left_margin), Mm(rule_y)), false),
-                    (Point::new(Mm(left_margin + content_width), Mm(rule_y)), false),
+                    (
+                        Point::new(Mm(left_margin + content_width), Mm(rule_y)),
+                        false,
+                    ),
                 ];
                 layer.add_line(Line {
                     points,
@@ -425,13 +440,11 @@ fn draw_running_header_footer(
     }
 
     // 2. Check if running footer contains an image
-    let footer_img_opt = ps
-        .and_then(|p| p.running_footer.as_ref())
-        .and_then(|f| {
-            find_img_in_nodes(&f.center)
-                .or_else(|| find_img_in_nodes(&f.left))
-                .or_else(|| find_img_in_nodes(&f.right))
-        });
+    let footer_img_opt = ps.and_then(|p| p.running_footer.as_ref()).and_then(|f| {
+        find_img_in_nodes(&f.center)
+            .or_else(|| find_img_in_nodes(&f.left))
+            .or_else(|| find_img_in_nodes(&f.right))
+    });
 
     let mut drew_footer_image = false;
     if let Some(img_el) = footer_img_opt {
@@ -443,7 +456,11 @@ fn draw_running_header_footer(
                     let aspect = if px_w > 0.0 { px_h / px_w } else { 0.15 };
                     let is_full_bleed = img_el.classes.iter().any(|c| c == "full-bleed")
                         || aspect < 0.22
-                        || img_el.inline_styles.get("width").map(|s| s.contains("100%")).unwrap_or(false);
+                        || img_el
+                            .inline_styles
+                            .get("width")
+                            .map(|s| s.contains("100%"))
+                            .unwrap_or(false);
 
                     if is_full_bleed {
                         let target_w = width_mm;
@@ -484,7 +501,8 @@ fn draw_running_header_footer(
                 }
                 if !center_text.is_empty() {
                     let footer_w = (center_text.len() as f32) * 8.5 * 0.19;
-                    let footer_x = (left_margin + (content_width - footer_w) / 2.0).max(left_margin);
+                    let footer_x =
+                        (left_margin + (content_width - footer_w) / 2.0).max(left_margin);
                     layer.use_text(&center_text, 8.5, Mm(footer_x), Mm(footer_y), font_reg);
                 }
                 if !right_text.is_empty() {
@@ -695,7 +713,12 @@ fn to_roman(mut n: usize) -> String {
     res
 }
 
-fn format_list_bullet(tag: &str, list_type: Option<&str>, idx: usize, indent_level: usize) -> String {
+fn format_list_bullet(
+    tag: &str,
+    list_type: Option<&str>,
+    idx: usize,
+    indent_level: usize,
+) -> String {
     if tag == "ul" {
         let default_bullet = match indent_level % 3 {
             0 => "disc",
@@ -1149,7 +1172,10 @@ fn render_doc_nodes(
                         current_layer.set_outline_thickness(0.6);
                         let points = vec![
                             (Point::new(Mm(left_margin), Mm(*cursor_y)), false),
-                            (Point::new(Mm(left_margin + content_width), Mm(*cursor_y)), false),
+                            (
+                                Point::new(Mm(left_margin + content_width), Mm(*cursor_y)),
+                                false,
+                            ),
                         ];
                         let line = Line {
                             points,
@@ -1200,7 +1226,8 @@ fn char_width(ch: char, family: FontFamily, bold: bool) -> f32 {
                     'm' => 833.0,
                     'I' => 333.0,
                     'J' => 444.0,
-                    'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'K' | 'N' | 'O' | 'P' | 'Q' | 'R' | 'T' | 'U' | 'V' | 'X' | 'Y' | 'Z' => 667.0,
+                    'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'K' | 'N' | 'O' | 'P' | 'Q'
+                    | 'R' | 'T' | 'U' | 'V' | 'X' | 'Y' | 'Z' => 667.0,
                     'M' | 'W' => 889.0,
                     _ => 500.0,
                 }
@@ -1216,7 +1243,8 @@ fn char_width(ch: char, family: FontFamily, bold: bool) -> f32 {
                     'm' => 778.0,
                     'I' => 333.0,
                     'J' => 389.0,
-                    'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'K' | 'N' | 'O' | 'P' | 'Q' | 'R' | 'T' | 'U' | 'V' | 'X' | 'Y' | 'Z' => 667.0,
+                    'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'K' | 'N' | 'O' | 'P' | 'Q'
+                    | 'R' | 'T' | 'U' | 'V' | 'X' | 'Y' | 'Z' => 667.0,
                     'M' | 'W' => 889.0,
                     _ => 500.0,
                 }
@@ -1230,13 +1258,31 @@ fn char_width(ch: char, family: FontFamily, bold: bool) -> f32 {
                     '!' | ',' | '.' | ':' | ';' | 'i' | 'l' | '\'' | '`' => 300.0,
                     'j' | 'r' | 't' | 'f' | '-' | '(' | ')' | '[' | ']' => 389.0,
                     's' => 556.0,
-                    'a' | 'b' | 'c' | 'd' | 'e' | 'g' | 'h' | 'k' | 'n' | 'o' | 'p' | 'q' | 'u' | 'v' | 'x' | 'y' | 'z' | '0'..='9' => 611.0,
+                    'a'
+                    | 'b'
+                    | 'c'
+                    | 'd'
+                    | 'e'
+                    | 'g'
+                    | 'h'
+                    | 'k'
+                    | 'n'
+                    | 'o'
+                    | 'p'
+                    | 'q'
+                    | 'u'
+                    | 'v'
+                    | 'x'
+                    | 'y'
+                    | 'z'
+                    | '0'..='9' => 611.0,
                     'w' => 778.0,
                     'm' => 889.0,
                     'I' => 333.0,
                     'J' => 556.0,
                     'L' => 611.0,
-                    'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'K' | 'N' | 'O' | 'P' | 'Q' | 'R' | 'T' | 'U' | 'V' | 'X' | 'Y' | 'Z' => 722.0,
+                    'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'K' | 'N' | 'O' | 'P' | 'Q'
+                    | 'R' | 'T' | 'U' | 'V' | 'X' | 'Y' | 'Z' => 722.0,
                     'M' | 'W' => 944.0,
                     _ => 611.0,
                 }
@@ -1246,13 +1292,31 @@ fn char_width(ch: char, family: FontFamily, bold: bool) -> f32 {
                     '!' | ',' | '.' | ':' | ';' | 'i' | 'l' | '\'' | '`' => 278.0,
                     'j' | 'r' | 't' | 'f' | '-' | '(' | ')' | '[' | ']' => 333.0,
                     's' => 500.0,
-                    'a' | 'b' | 'c' | 'd' | 'e' | 'g' | 'h' | 'k' | 'n' | 'o' | 'p' | 'q' | 'u' | 'v' | 'x' | 'y' | 'z' | '0'..='9' => 556.0,
+                    'a'
+                    | 'b'
+                    | 'c'
+                    | 'd'
+                    | 'e'
+                    | 'g'
+                    | 'h'
+                    | 'k'
+                    | 'n'
+                    | 'o'
+                    | 'p'
+                    | 'q'
+                    | 'u'
+                    | 'v'
+                    | 'x'
+                    | 'y'
+                    | 'z'
+                    | '0'..='9' => 556.0,
                     'w' => 722.0,
                     'm' => 833.0,
                     'I' => 278.0,
                     'J' => 500.0,
                     'L' => 556.0,
-                    'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'K' | 'N' | 'O' | 'P' | 'Q' | 'R' | 'T' | 'U' | 'V' | 'X' | 'Y' | 'Z' => 667.0,
+                    'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'K' | 'N' | 'O' | 'P' | 'Q'
+                    | 'R' | 'T' | 'U' | 'V' | 'X' | 'Y' | 'Z' => 667.0,
                     'M' | 'W' => 833.0,
                     _ => 556.0,
                 }
@@ -1664,7 +1728,12 @@ fn render_styled_paragraph(
             continue;
         }
 
-        let needed = word.width_mm + if word.has_trailing_space { space_w } else { 0.0 };
+        let needed = word.width_mm
+            + if word.has_trailing_space {
+                space_w
+            } else {
+                0.0
+            };
         if !cur_line.is_empty() && cur_line_width + word.width_mm > actual_width {
             lines.push(cur_line);
             cur_line = Vec::new();
@@ -1902,13 +1971,33 @@ fn render_table(
     }
 
     let is_borderless = el.classes.iter().any(|c| c == "borderless")
-        || el.attributes.get("class").map(|c| c.contains("borderless")).unwrap_or(false)
-        || el.inline_styles.get("border").map(|b| b.contains("none")).unwrap_or(false);
+        || el
+            .attributes
+            .get("class")
+            .map(|c| c.contains("borderless"))
+            .unwrap_or(false)
+        || el
+            .inline_styles
+            .get("border")
+            .map(|b| b.contains("none"))
+            .unwrap_or(false);
 
     let is_align_right = el.classes.iter().any(|c| c == "align-right")
-        || el.attributes.get("class").map(|c| c.contains("align-right")).unwrap_or(false)
-        || el.attributes.get("align").map(|a| a == "right").unwrap_or(false)
-        || el.inline_styles.get("margin-left").map(|m| m.contains("auto")).unwrap_or(false);
+        || el
+            .attributes
+            .get("class")
+            .map(|c| c.contains("align-right"))
+            .unwrap_or(false)
+        || el
+            .attributes
+            .get("align")
+            .map(|a| a == "right")
+            .unwrap_or(false)
+        || el
+            .inline_styles
+            .get("margin-left")
+            .map(|m| m.contains("auto"))
+            .unwrap_or(false);
 
     let (table_left, table_width) = if is_align_right {
         (left_margin + content_width * 0.52, content_width * 0.48)
@@ -1998,8 +2087,7 @@ fn render_table(
 
         if *cursor_y - row_height_mm < bottom_margin {
             *page_count += 1;
-            let (new_page, new_layer) =
-                pdf_doc.add_page(Mm(width_mm), Mm(height_mm), "Content");
+            let (new_page, new_layer) = pdf_doc.add_page(Mm(width_mm), Mm(height_mm), "Content");
             *current_page = new_page;
             *current_layer = pdf_doc.get_page(new_page).get_layer(new_layer);
             draw_running_header_footer(
@@ -2043,8 +2131,14 @@ fn render_table(
             current_layer.set_outline_thickness(0.5);
             let border_line = Line {
                 points: vec![
-                    (Point::new(Mm(table_left), Mm(*cursor_y - row_height_mm)), false),
-                    (Point::new(Mm(table_left + table_width), Mm(*cursor_y - row_height_mm)), false),
+                    (
+                        Point::new(Mm(table_left), Mm(*cursor_y - row_height_mm)),
+                        false,
+                    ),
+                    (
+                        Point::new(Mm(table_left + table_width), Mm(*cursor_y - row_height_mm)),
+                        false,
+                    ),
                 ],
                 is_closed: false,
             };
@@ -2053,7 +2147,9 @@ fn render_table(
 
         for (col_idx, cell) in cells.iter().enumerate() {
             let lines = &row_cell_lines[col_idx];
-            let cell_align = cell.attributes.get("align")
+            let cell_align = cell
+                .attributes
+                .get("align")
                 .map(|s| s.as_str())
                 .or_else(|| {
                     cell.children.iter().find_map(|c| {
@@ -2133,16 +2229,32 @@ fn render_image(
 
     let aspect = px_h / px_w;
     let mut target_w = content_width;
-    if let Some(w_str) = el.attributes.get("width").or_else(|| el.inline_styles.get("width")) {
-        if let Ok(w) = w_str.trim_end_matches("mm").trim_end_matches("px").parse::<f32>() {
+    if let Some(w_str) = el
+        .attributes
+        .get("width")
+        .or_else(|| el.inline_styles.get("width"))
+    {
+        if let Ok(w) = w_str
+            .trim_end_matches("mm")
+            .trim_end_matches("px")
+            .parse::<f32>()
+        {
             if w > 0.0 {
                 target_w = w.min(content_width);
             }
         }
     }
     let mut target_h = target_w * aspect;
-    if let Some(h_str) = el.attributes.get("height").or_else(|| el.inline_styles.get("max-height")) {
-        if let Ok(h) = h_str.trim_end_matches("mm").trim_end_matches("px").parse::<f32>() {
+    if let Some(h_str) = el
+        .attributes
+        .get("height")
+        .or_else(|| el.inline_styles.get("max-height"))
+    {
+        if let Ok(h) = h_str
+            .trim_end_matches("mm")
+            .trim_end_matches("px")
+            .parse::<f32>()
+        {
             if h > 0.0 && target_h > h {
                 target_h = h;
                 target_w = target_h / aspect;
@@ -2174,7 +2286,11 @@ fn render_image(
         *cursor_y = height_mm - top_margin;
     }
 
-    let align = el.attributes.get("align").map(|s| s.as_str()).unwrap_or("center");
+    let align = el
+        .attributes
+        .get("align")
+        .map(|s| s.as_str())
+        .unwrap_or("center");
     let img_x = match align {
         "left" => left_margin,
         "right" => left_margin + content_width - target_w,
@@ -2182,7 +2298,14 @@ fn render_image(
     };
 
     let img_bottom_y = *cursor_y - target_h;
-    draw_image_on_layer(current_layer, &dyn_img, img_x, img_bottom_y, target_w, target_h);
+    draw_image_on_layer(
+        current_layer,
+        &dyn_img,
+        img_x,
+        img_bottom_y,
+        target_w,
+        target_h,
+    );
 
     *cursor_y = img_bottom_y - 4.0;
 }

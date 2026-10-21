@@ -37,7 +37,9 @@ fn collect_images_from_doc(doc: &Document) -> HashMap<String, ImageEntry> {
                                         } else {
                                             "png"
                                         };
-                                        if let Ok(b) = base64::engine::general_purpose::STANDARD.decode(src[pos + 1..].trim()) {
+                                        if let Ok(b) = base64::engine::general_purpose::STANDARD
+                                            .decode(src[pos + 1..].trim())
+                                        {
                                             (b, ext)
                                         } else {
                                             (Vec::new(), ext)
@@ -49,7 +51,9 @@ fn collect_images_from_doc(doc: &Document) -> HashMap<String, ImageEntry> {
                                     (b, "png")
                                 } else {
                                     let mut found = None;
-                                    for prefix in &["assets/", "media/", "../", "../media/", "word/media/"] {
+                                    for prefix in
+                                        &["assets/", "media/", "../", "../media/", "word/media/"]
+                                    {
                                         let candidate = format!("{}{}", prefix, src);
                                         if let Ok(b) = std::fs::read(&candidate) {
                                             found = Some((b, "png"));
@@ -60,11 +64,12 @@ fn collect_images_from_doc(doc: &Document) -> HashMap<String, ImageEntry> {
                                 };
 
                                 if !bytes.is_empty() {
-                                    let (w, h) = if let Ok(dyn_img) = ::image::load_from_memory(&bytes) {
-                                        (dyn_img.width(), dyn_img.height())
-                                    } else {
-                                        (800, 600)
-                                    };
+                                    let (w, h) =
+                                        if let Ok(dyn_img) = ::image::load_from_memory(&bytes) {
+                                            (dyn_img.width(), dyn_img.height())
+                                        } else {
+                                            (800, 600)
+                                        };
 
                                     let entry = ImageEntry {
                                         r_id: format!("rIdImg_{}", counter),
@@ -96,8 +101,7 @@ fn collect_images_from_doc(doc: &Document) -> HashMap<String, ImageEntry> {
 pub fn export_docx(doc: &Document) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
     let cursor = Cursor::new(Vec::new());
     let mut zip = ZipWriter::new(cursor);
-    let options = SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
     let images = collect_images_from_doc(doc);
 
@@ -110,12 +114,14 @@ pub fn export_docx(doc: &Document) -> Result<Vec<u8>, Box<dyn std::error::Error 
     zip.write_all(RELS_XML.as_bytes())?;
 
     // 3. word/_rels/document.xml.rels
-    let mut word_rels = String::from(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    let mut word_rels = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
   <Relationship Id="rIdH1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>
   <Relationship Id="rIdF1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>
-"#);
+"#,
+    );
     for entry in images.values() {
         word_rels.push_str(&format!(
             "  <Relationship Id=\"{}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"media/{}\"/>\n",
@@ -161,9 +167,11 @@ fn get_active_page_style(doc: &Document) -> Option<&PageStyle> {
     if let Some(ps) = doc.props.page_styles.get("body") {
         return Some(ps);
     }
-    doc.props.page_styles.values().find(|ps| ps.is_default).or_else(|| {
-        doc.props.page_styles.values().next()
-    })
+    doc.props
+        .page_styles
+        .values()
+        .find(|ps| ps.is_default)
+        .or_else(|| doc.props.page_styles.values().next())
 }
 
 fn extract_nodes_plain_text(nodes: &[Node]) -> String {
@@ -185,7 +193,8 @@ fn generate_header_xml(doc: &Document) -> String {
         None => {
             return r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>"#.to_string();
+       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>"#
+                .to_string();
         }
     };
 
@@ -199,7 +208,11 @@ fn generate_header_xml(doc: &Document) -> String {
 
     let is_letter = doc.props.paper.size.to_lowercase() == "letter";
     let is_landscape = doc.props.paper.orientation.to_lowercase() == "landscape";
-    let (mut w, mut _h): (u32, u32) = if is_letter { (12240, 15840) } else { (11906, 16838) };
+    let (mut w, mut _h): (u32, u32) = if is_letter {
+        (12240, 15840)
+    } else {
+        (11906, 16838)
+    };
     if is_landscape {
         std::mem::swap(&mut w, &mut _h);
     }
@@ -272,7 +285,8 @@ fn generate_footer_xml(doc: &Document) -> String {
         None => {
             return r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>"#.to_string();
+       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>"#
+                .to_string();
         }
     };
 
@@ -286,7 +300,8 @@ fn generate_footer_xml(doc: &Document) -> String {
     if footer_text.is_empty() {
         return r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>"#.to_string();
+       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>"#
+            .to_string();
     }
 
     format!(
@@ -326,11 +341,19 @@ fn generate_document_xml(doc: &Document, images: &HashMap<String, ImageEntry>) -
     // Section properties (A4 default: 11906 x 16838 dxa, Letter: 12240 x 15840)
     let is_landscape = doc.props.paper.orientation.to_lowercase() == "landscape";
     let is_letter = doc.props.paper.size.to_lowercase() == "letter";
-    let (mut w, mut h) = if is_letter { (12240, 15840) } else { (11906, 16838) };
+    let (mut w, mut h) = if is_letter {
+        (12240, 15840)
+    } else {
+        (11906, 16838)
+    };
     if is_landscape {
         std::mem::swap(&mut w, &mut h);
     }
-    let orient_attr = if is_landscape { " w:orient=\"landscape\"" } else { "" };
+    let orient_attr = if is_landscape {
+        " w:orient=\"landscape\""
+    } else {
+        ""
+    };
 
     // Dynamic margin in dxa (1mm ≈ 56.7 dxa)
     let margin_mm = doc.props.paper.margin.val;
@@ -381,6 +404,86 @@ fn get_p_align(el: &ElementNode) -> Option<&'static str> {
         }
     }
     None
+}
+
+fn css_length_to_twips(value: &str) -> Option<i32> {
+    let value = value.trim();
+    let (number, multiplier) = if let Some(number) = value.strip_suffix("mm") {
+        (number, 1440.0 / 25.4)
+    } else if let Some(number) = value.strip_suffix("cm") {
+        (number, 1440.0 / 2.54)
+    } else if let Some(number) = value.strip_suffix("in") {
+        (number, 1440.0)
+    } else if let Some(number) = value.strip_suffix("pt") {
+        (number, 20.0)
+    } else if let Some(number) = value.strip_suffix("px") {
+        (number, 15.0)
+    } else {
+        return None;
+    };
+    number
+        .trim()
+        .parse::<f32>()
+        .ok()
+        .map(|number| (number * multiplier).round() as i32)
+}
+
+fn append_direct_paragraph_formatting(el: &ElementNode, ppr: &mut String) {
+    let before = el
+        .inline_styles
+        .get("margin-top")
+        .and_then(|v| css_length_to_twips(v));
+    let after = el
+        .inline_styles
+        .get("margin-bottom")
+        .and_then(|v| css_length_to_twips(v));
+    let line = el.inline_styles.get("line-height").and_then(|v| {
+        v.trim()
+            .parse::<f32>()
+            .ok()
+            .map(|value| (value * 240.0).round() as i32)
+    });
+    if before.is_some() || after.is_some() || line.is_some() {
+        let before = before.unwrap_or(0).max(0);
+        let after = after.unwrap_or(0).max(0);
+        let line = line.unwrap_or(0).max(0);
+        if line > 0 {
+            ppr.push_str(&format!("<w:spacing w:before=\"{before}\" w:after=\"{after}\" w:line=\"{line}\" w:lineRule=\"auto\"/>"));
+        } else {
+            ppr.push_str(&format!(
+                "<w:spacing w:before=\"{before}\" w:after=\"{after}\"/>"
+            ));
+        }
+    }
+    let left = el
+        .inline_styles
+        .get("margin-left")
+        .and_then(|v| css_length_to_twips(v));
+    let right = el
+        .inline_styles
+        .get("margin-right")
+        .and_then(|v| css_length_to_twips(v));
+    let first = el
+        .inline_styles
+        .get("text-indent")
+        .and_then(|v| css_length_to_twips(v));
+    if left.is_some() || right.is_some() || first.is_some() {
+        let mut attrs = String::new();
+        if let Some(value) = left {
+            attrs.push_str(&format!(" w:left=\"{}\"", value.max(0)));
+        }
+        if let Some(value) = right {
+            attrs.push_str(&format!(" w:right=\"{}\"", value.max(0)));
+        }
+        if let Some(value) = first {
+            if value < 0 {
+                attrs.push_str(&format!(" w:hanging=\"{}\"", -value));
+            } else {
+                attrs.push_str(&format!(" w:firstLine=\"{}\"", value));
+            }
+        }
+        ppr.push_str(&format!("<w:ind{attrs}/>"));
+    }
 }
 
 fn is_inline_node(node: &Node) -> bool {
@@ -519,6 +622,7 @@ fn convert_node_with_indent(
                         let ind = (indent_level as u32) * 480;
                         ppr.push_str(&format!("<w:ind w:left=\"{}\"/>", ind));
                     }
+                    append_direct_paragraph_formatting(el, &mut ppr);
                     out.push_str(&format!("<w:p><w:pPr>{}</w:pPr>", ppr));
                     emit_inline_runs(el, false, false, false, false, false, false, false, out);
                     out.push_str("</w:p>\n");
@@ -531,11 +635,10 @@ fn convert_node_with_indent(
                     out.push_str("</w:p>\n");
                 }
                 "ul" => {
-                    let list_type = el
-                        .attributes
-                        .get("type")
-                        .map(|s| s.as_str())
-                        .or_else(|| el.inline_styles.get("list-style-type").map(|s| s.as_str()));
+                    let list_type =
+                        el.attributes.get("type").map(|s| s.as_str()).or_else(|| {
+                            el.inline_styles.get("list-style-type").map(|s| s.as_str())
+                        });
                     let default_bullet = match indent_level % 3 {
                         0 => "•",
                         1 => "◦",
@@ -556,7 +659,9 @@ fn convert_node_with_indent(
                                     "<w:p><w:pPr><w:pStyle w:val=\"ListBullet\"/><w:numPr><w:ilvl w:val=\"{}\"/><w:numId w:val=\"1\"/></w:numPr><w:ind w:left=\"{}\" w:hanging=\"360\"/><w:spacing w:after=\"60\" w:line=\"260\" w:lineRule=\"auto\"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t xml:space=\"preserve\">{} </w:t></w:r>",
                                     indent_level, indent_dxa, bullet_sym
                                 ));
-                                emit_inline_runs(li_el, false, false, false, false, false, false, false, out);
+                                emit_inline_runs(
+                                    li_el, false, false, false, false, false, false, false, out,
+                                );
                                 out.push_str("</w:p>\n");
 
                                 for li_child in &li_el.children {
@@ -577,11 +682,10 @@ fn convert_node_with_indent(
                     }
                 }
                 "ol" => {
-                    let num_type = el
-                        .attributes
-                        .get("type")
-                        .map(|s| s.as_str())
-                        .or_else(|| el.inline_styles.get("list-style-type").map(|s| s.as_str()));
+                    let num_type =
+                        el.attributes.get("type").map(|s| s.as_str()).or_else(|| {
+                            el.inline_styles.get("list-style-type").map(|s| s.as_str())
+                        });
                     let default_type = match indent_level % 3 {
                         0 => "1",
                         1 => "a",
@@ -599,10 +703,19 @@ fn convert_node_with_indent(
                         if let Node::Element(li_el) = li {
                             if li_el.tag.to_lowercase() == "li" {
                                 let num_str = match effective_type {
-                                    "a" | "lower-alpha" => format!("{}.", to_lower_alpha(start_idx + item_idx)),
-                                    "A" | "upper-alpha" => format!("{}.", to_upper_alpha(start_idx + item_idx)),
-                                    "i" | "lower-roman" => format!("{}.", to_roman(start_idx + item_idx)),
-                                    "I" | "upper-roman" => format!("{}.", to_roman(start_idx + item_idx).to_uppercase()),
+                                    "a" | "lower-alpha" => {
+                                        format!("{}.", to_lower_alpha(start_idx + item_idx))
+                                    }
+                                    "A" | "upper-alpha" => {
+                                        format!("{}.", to_upper_alpha(start_idx + item_idx))
+                                    }
+                                    "i" | "lower-roman" => {
+                                        format!("{}.", to_roman(start_idx + item_idx))
+                                    }
+                                    "I" | "upper-roman" => format!(
+                                        "{}.",
+                                        to_roman(start_idx + item_idx).to_uppercase()
+                                    ),
                                     _ => format!("{}.", start_idx + item_idx),
                                 };
                                 item_idx += 1;
@@ -610,7 +723,9 @@ fn convert_node_with_indent(
                                     "<w:p><w:pPr><w:pStyle w:val=\"ListNumber\"/><w:numPr><w:ilvl w:val=\"{}\"/><w:numId w:val=\"2\"/></w:numPr><w:ind w:left=\"{}\" w:hanging=\"360\"/><w:spacing w:after=\"60\" w:line=\"260\" w:lineRule=\"auto\"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t xml:space=\"preserve\">{} </w:t></w:r>",
                                     indent_level, indent_dxa, num_str
                                 ));
-                                emit_inline_runs(li_el, false, false, false, false, false, false, false, out);
+                                emit_inline_runs(
+                                    li_el, false, false, false, false, false, false, false, out,
+                                );
                                 out.push_str("</w:p>\n");
 
                                 for li_child in &li_el.children {
@@ -675,10 +790,14 @@ fn emit_heading(el: &ElementNode, style: &str, out: &mut String) {
         "Heading3" => (100, 80),
         _ => (120, 80),
     };
-    ppr.push_str(&format!("<w:spacing w:before=\"{}\" w:after=\"{}\"/>", before, after));
+    ppr.push_str(&format!(
+        "<w:spacing w:before=\"{}\" w:after=\"{}\"/>",
+        before, after
+    ));
     if let Some(align) = get_p_align(el) {
         ppr.push_str(&format!("<w:jc w:val=\"{}\"/>", align));
     }
+    append_direct_paragraph_formatting(el, &mut ppr);
     out.push_str(&format!("<w:p><w:pPr>{}</w:pPr>", ppr));
     emit_inline_runs(el, false, false, false, false, false, false, false, out);
     out.push_str("</w:p>\n");
@@ -708,6 +827,48 @@ fn normalize_inline_whitespace(text: &str, is_first: bool, is_last: bool) -> Str
     }
 
     result
+}
+
+fn inline_style_rpr(el: &ElementNode) -> String {
+    let mut rpr = String::new();
+    if let Some(font) = el.inline_styles.get("font-family") {
+        let font = font
+            .split(',')
+            .next()
+            .unwrap_or(font)
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'');
+        if !font.is_empty() {
+            let font = escape_xml(font);
+            rpr.push_str(&format!(
+                "<w:rFonts w:ascii=\"{font}\" w:hAnsi=\"{font}\" w:cs=\"{font}\"/>"
+            ));
+        }
+    }
+    if let Some(size) = el.inline_styles.get("font-size") {
+        if let Some(points) = size
+            .trim()
+            .strip_suffix("pt")
+            .and_then(|value| value.trim().parse::<f32>().ok())
+        {
+            rpr.push_str(&format!(
+                "<w:sz w:val=\"{}\"/>",
+                (points * 2.0).round().max(2.0) as u32
+            ));
+        }
+    }
+    if let Some(color) = el.inline_styles.get("color") {
+        let color = css_color(Some(color.clone()), "000000");
+        rpr.push_str(&format!("<w:color w:val=\"{color}\"/>"));
+    }
+    if let Some(background) = el.inline_styles.get("background-color") {
+        let fill = css_color(Some(background.clone()), "FFFFFF");
+        rpr.push_str(&format!(
+            "<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"{fill}\"/>"
+        ));
+    }
+    rpr
 }
 
 fn emit_inline_runs(
@@ -740,6 +901,31 @@ fn emit_inline_runs(
         out.push_str("<w:r><w:br/></w:r>");
         return;
     }
+    if el
+        .inline_styles
+        .get("font-weight")
+        .map(|v| v == "bold" || v.parse::<u32>().map(|n| n >= 600).unwrap_or(false))
+        .unwrap_or(false)
+    {
+        bold = true;
+    }
+    if el
+        .inline_styles
+        .get("font-style")
+        .map(|v| v.eq_ignore_ascii_case("italic") || v.eq_ignore_ascii_case("oblique"))
+        .unwrap_or(false)
+    {
+        italic = true;
+    }
+    if el
+        .inline_styles
+        .get("text-decoration")
+        .map(|v| v.contains("underline"))
+        .unwrap_or(false)
+    {
+        underline = true;
+    }
+    let style_rpr = inline_style_rpr(el);
 
     let num_children = el.children.len();
     for (idx, child) in el.children.iter().enumerate() {
@@ -774,10 +960,14 @@ fn emit_inline_runs(
                 if mark {
                     rpr.push_str("<w:highlight w:val=\"yellow\"/>");
                 }
+                rpr.push_str(&style_rpr);
                 if !rpr.is_empty() {
                     out.push_str(&format!("<w:rPr>{}</w:rPr>", rpr));
                 }
-                out.push_str(&format!("<w:t xml:space=\"preserve\">{}</w:t></w:r>", escape_xml(&norm)));
+                out.push_str(&format!(
+                    "<w:t xml:space=\"preserve\">{}</w:t></w:r>",
+                    escape_xml(&norm)
+                ));
             }
             Node::Element(sub_el) => {
                 let sub_tag = sub_el.tag.to_lowercase();
@@ -912,7 +1102,11 @@ fn emit_image(el: &ElementNode, images: &HashMap<String, ImageEntry>, out: &mut 
         None => return,
     };
 
-    let align = el.attributes.get("align").map(|s| s.as_str()).unwrap_or("center");
+    let align = el
+        .attributes
+        .get("align")
+        .map(|s| s.as_str())
+        .unwrap_or("center");
     let jc = match align {
         "left" => "left",
         "right" => "right",
@@ -933,7 +1127,11 @@ fn emit_image(el: &ElementNode, images: &HashMap<String, ImageEntry>, out: &mut 
         cx * 3 / 4
     };
 
-    let id = entry.r_id.trim_start_matches("rIdImg_").parse::<u32>().unwrap_or(1);
+    let id = entry
+        .r_id
+        .trim_start_matches("rIdImg_")
+        .parse::<u32>()
+        .unwrap_or(1);
 
     out.push_str(&format!(
         r#"<w:p>
@@ -981,13 +1179,33 @@ fn emit_image(el: &ElementNode, images: &HashMap<String, ImageEntry>, out: &mut 
 
 fn emit_table(el: &ElementNode, out: &mut String) {
     let is_borderless = el.classes.iter().any(|c| c == "borderless")
-        || el.attributes.get("class").map(|c| c.contains("borderless")).unwrap_or(false)
-        || el.inline_styles.get("border").map(|b| b.contains("none")).unwrap_or(false);
+        || el
+            .attributes
+            .get("class")
+            .map(|c| c.contains("borderless"))
+            .unwrap_or(false)
+        || el
+            .inline_styles
+            .get("border")
+            .map(|b| b.contains("none"))
+            .unwrap_or(false);
 
     let is_align_right = el.classes.iter().any(|c| c == "align-right")
-        || el.attributes.get("class").map(|c| c.contains("align-right")).unwrap_or(false)
-        || el.attributes.get("align").map(|a| a == "right").unwrap_or(false)
-        || el.inline_styles.get("margin-left").map(|m| m.contains("auto")).unwrap_or(false);
+        || el
+            .attributes
+            .get("class")
+            .map(|c| c.contains("align-right"))
+            .unwrap_or(false)
+        || el
+            .attributes
+            .get("align")
+            .map(|a| a == "right")
+            .unwrap_or(false)
+        || el
+            .inline_styles
+            .get("margin-left")
+            .map(|m| m.contains("auto"))
+            .unwrap_or(false);
 
     out.push_str("<w:tbl>\n");
     out.push_str("  <w:tblPr>\n");
@@ -996,7 +1214,8 @@ fn emit_table(el: &ElementNode, out: &mut String) {
     }
     out.push_str("    <w:tblW w:w=\"5000\" w:type=\"pct\"/>\n");
     if is_borderless {
-        out.push_str(r#"    <w:tblBorders>
+        out.push_str(
+            r#"    <w:tblBorders>
       <w:top w:val="nil"/>
       <w:left w:val="nil"/>
       <w:bottom w:val="nil"/>
@@ -1004,9 +1223,11 @@ fn emit_table(el: &ElementNode, out: &mut String) {
       <w:insideH w:val="nil"/>
       <w:insideV w:val="nil"/>
     </w:tblBorders>
-"#);
+"#,
+        );
     } else {
-        out.push_str(r#"    <w:tblBorders>
+        out.push_str(
+            r#"    <w:tblBorders>
       <w:top w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/>
       <w:left w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/>
       <w:bottom w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/>
@@ -1014,7 +1235,8 @@ fn emit_table(el: &ElementNode, out: &mut String) {
       <w:insideH w:val="single" w:sz="4" w:space="0" w:color="E2E8F0"/>
       <w:insideV w:val="single" w:sz="4" w:space="0" w:color="E2E8F0"/>
     </w:tblBorders>
-"#);
+"#,
+        );
     }
     out.push_str("  </w:tblPr>\n");
 
@@ -1040,28 +1262,36 @@ fn emit_table(el: &ElementNode, out: &mut String) {
 "#,
                     );
                     if is_borderless {
-                        out.push_str(r#"        <w:tcBorders>
+                        out.push_str(
+                            r#"        <w:tcBorders>
           <w:top w:val="nil"/>
           <w:left w:val="nil"/>
           <w:bottom w:val="nil"/>
           <w:right w:val="nil"/>
         </w:tcBorders>
-"#);
+"#,
+                        );
                     }
                     if is_header {
-                        out.push_str("        <w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"F8FAFC\"/>\n");
+                        out.push_str(
+                            "        <w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"F8FAFC\"/>\n",
+                        );
                     }
                     out.push_str("      </w:tcPr>\n");
 
-                    let cell_align = cell.attributes.get("align").map(|s| s.as_str()).or_else(|| {
-                        cell.children.iter().find_map(|c| {
-                            if let Node::Element(p) = c {
-                                p.attributes.get("align").map(|s| s.as_str())
-                            } else {
-                                None
-                            }
-                        })
-                    });
+                    let cell_align =
+                        cell.attributes
+                            .get("align")
+                            .map(|s| s.as_str())
+                            .or_else(|| {
+                                cell.children.iter().find_map(|c| {
+                                    if let Node::Element(p) = c {
+                                        p.attributes.get("align").map(|s| s.as_str())
+                                    } else {
+                                        None
+                                    }
+                                })
+                            });
 
                     let ppr = match cell_align {
                         Some("center") => "<w:pPr><w:jc w:val=\"center\"/></w:pPr>",
@@ -1070,7 +1300,9 @@ fn emit_table(el: &ElementNode, out: &mut String) {
                     };
 
                     out.push_str(&format!("      <w:p>{}", ppr));
-                    emit_inline_runs(cell, is_header, false, false, false, false, false, false, out);
+                    emit_inline_runs(
+                        cell, is_header, false, false, false, false, false, false, out,
+                    );
                     out.push_str("</w:p>\n");
                     out.push_str("    </w:tc>\n");
                 }
@@ -1103,40 +1335,117 @@ fn escape_xml(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-fn detect_doc_font_family(doc: &Document) -> &'static str {
+fn css_value(doc: &Document, selector: &str, property: &str) -> Option<String> {
+    let mut value = None;
+    for rule in &doc.props.stylesheet.rules {
+        if rule
+            .selectors
+            .iter()
+            .any(|candidate| candidate.trim() == selector)
+        {
+            if let Some(candidate) = rule.declarations.get(property) {
+                value = Some(candidate.trim().to_string());
+            }
+        }
+    }
+    value
+}
+
+fn css_color(value: Option<String>, fallback: &str) -> String {
+    let value = value.unwrap_or_else(|| fallback.to_string());
+    let clean = value.trim().trim_start_matches('#');
+    if clean.len() == 6 && clean.chars().all(|c| c.is_ascii_hexdigit()) {
+        clean.to_ascii_uppercase()
+    } else {
+        fallback.to_string()
+    }
+}
+
+fn css_half_points(value: Option<String>, fallback: u32) -> u32 {
+    value
+        .and_then(|v| {
+            v.trim()
+                .strip_suffix("pt")
+                .map(str::trim)
+                .and_then(|n| n.parse::<f32>().ok())
+        })
+        .map(|points| (points * 2.0).round().max(2.0) as u32)
+        .unwrap_or(fallback)
+}
+
+fn css_line_twips(value: Option<String>, fallback: u32) -> u32 {
+    value
+        .and_then(|v| v.trim().parse::<f32>().ok())
+        .map(|line_height| (line_height * 240.0).round().max(1.0) as u32)
+        .unwrap_or(fallback)
+}
+
+fn detect_doc_font_family(doc: &Document) -> String {
+    let family =
+        css_value(doc, "body", "font-family").or_else(|| css_value(doc, "doc", "font-family"));
+    if let Some(family) = family {
+        let first = family
+            .split(',')
+            .next()
+            .unwrap_or(&family)
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'');
+        if !first.is_empty() {
+            return first.to_string();
+        }
+    }
     for rule in &doc.props.stylesheet.rules {
         if rule.selectors.iter().any(|s| s == "body") {
             if let Some(ff) = rule.declarations.get("font-family") {
                 let ffl = ff.to_lowercase();
                 if ffl.contains("times") || ffl.contains("serif") || ffl.contains("georgia") {
-                    return "Times New Roman";
+                    return "Times New Roman".to_string();
                 }
                 if ffl.contains("arial") || ffl.contains("helvetica") {
-                    return "Arial";
+                    return "Arial".to_string();
                 }
                 if ffl.contains("calibri") {
-                    return "Calibri";
+                    return "Calibri".to_string();
                 }
             }
         }
     }
-    "Segoe UI"
+    "Segoe UI".to_string()
 }
 
 fn generate_styles_xml(doc: &Document) -> String {
     let font_name = detect_doc_font_family(doc);
+    let body_size = css_half_points(
+        css_value(doc, "body", "font-size").or_else(|| css_value(doc, "doc", "font-size")),
+        21,
+    );
+    let body_color = css_color(
+        css_value(doc, "body", "color").or_else(|| css_value(doc, "doc", "color")),
+        "334155",
+    );
+    let body_line = css_line_twips(
+        css_value(doc, "body", "line-height").or_else(|| css_value(doc, "doc", "line-height")),
+        260,
+    );
+    let h1_size = css_half_points(css_value(doc, "h1", "font-size"), 48);
+    let h1_color = css_color(css_value(doc, "h1", "color"), "1E3A8A");
+    let h2_size = css_half_points(css_value(doc, "h2", "font-size"), 32);
+    let h2_color = css_color(css_value(doc, "h2", "color"), "0F172A");
+    let h3_size = css_half_points(css_value(doc, "h3", "font-size"), 26);
+    let h3_color = css_color(css_value(doc, "h3", "color"), "1E293B");
     format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   <w:style w:type="paragraph" w:default="1" w:styleId="Normal">
     <w:name w:val="Normal"/>
     <w:pPr>
-      <w:spacing w:after="140" w:line="260" w:lineRule="auto"/>
+      <w:spacing w:after="140" w:line="{body_line}" w:lineRule="auto"/>
     </w:pPr>
     <w:rPr>
       <w:rFonts w:ascii="{font}" w:hAnsi="{font}" w:cs="{font}"/>
-      <w:sz w:val="21"/>
-      <w:color w:val="334155"/>
+      <w:sz w:val="{body_size}"/>
+      <w:color w:val="{body_color}"/>
     </w:rPr>
   </w:style>
   <w:style w:type="paragraph" w:styleId="Heading1">
@@ -1147,8 +1456,8 @@ fn generate_styles_xml(doc: &Document) -> String {
     <w:rPr>
       <w:rFonts w:ascii="{font}" w:hAnsi="{font}" w:cs="{font}"/>
       <w:b/>
-      <w:sz w:val="48"/>
-      <w:color w:val="1E3A8A"/>
+      <w:sz w:val="{h1_size}"/>
+      <w:color w:val="{h1_color}"/>
     </w:rPr>
   </w:style>
   <w:style w:type="paragraph" w:styleId="Heading2">
@@ -1159,8 +1468,8 @@ fn generate_styles_xml(doc: &Document) -> String {
     <w:rPr>
       <w:rFonts w:ascii="{font}" w:hAnsi="{font}" w:cs="{font}"/>
       <w:b/>
-      <w:sz w:val="32"/>
-      <w:color w:val="0F172A"/>
+      <w:sz w:val="{h2_size}"/>
+      <w:color w:val="{h2_color}"/>
     </w:rPr>
   </w:style>
   <w:style w:type="paragraph" w:styleId="Heading3">
@@ -1171,12 +1480,21 @@ fn generate_styles_xml(doc: &Document) -> String {
     <w:rPr>
       <w:rFonts w:ascii="{font}" w:hAnsi="{font}" w:cs="{font}"/>
       <w:b/>
-      <w:sz w:val="26"/>
-      <w:color w:val="1E293B"/>
+      <w:sz w:val="{h3_size}"/>
+      <w:color w:val="{h3_color}"/>
     </w:rPr>
   </w:style>
 </w:styles>"#,
-        font = font_name
+        font = escape_xml(&font_name),
+        body_line = body_line,
+        body_size = body_size,
+        body_color = body_color,
+        h1_size = h1_size,
+        h1_color = h1_color,
+        h2_size = h2_size,
+        h2_color = h2_color,
+        h3_size = h3_size,
+        h3_color = h3_color
     )
 }
 

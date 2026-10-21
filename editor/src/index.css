@@ -200,7 +200,10 @@ html, body, #root {
   /* Render paper pages at exact dimensions with forced vector quality and color */
   .ddl-paper {
     width: 210mm !important;
+    height: 297mm !important;
     min-height: 297mm !important;
+    max-height: 297mm !important;
+    overflow: hidden !important;
     box-shadow: none !important;
     border-radius: 0 !important;
     margin: 0 auto !important;

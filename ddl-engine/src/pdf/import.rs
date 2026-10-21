@@ -74,7 +74,10 @@ fn parse_list_item(line: &str) -> Option<ListPrefix> {
     ];
     for p in &lower_roman_prefixes {
         if trimmed.starts_with(p) {
-            return Some(ListPrefix::Number("i", trimmed[p.len()..].trim().to_string()));
+            return Some(ListPrefix::Number(
+                "i",
+                trimmed[p.len()..].trim().to_string(),
+            ));
         }
     }
 
@@ -84,7 +87,10 @@ fn parse_list_item(line: &str) -> Option<ListPrefix> {
     ];
     for p in &upper_roman_prefixes {
         if trimmed.starts_with(p) {
-            return Some(ListPrefix::Number("I", trimmed[p.len()..].trim().to_string()));
+            return Some(ListPrefix::Number(
+                "I",
+                trimmed[p.len()..].trim().to_string(),
+            ));
         }
     }
 
@@ -151,15 +157,27 @@ fn is_heading_candidate(line: &str) -> Option<(u8, String)> {
     }
 
     let alphabetic_chars: Vec<char> = t.chars().filter(|c| c.is_alphabetic()).collect();
-    if alphabetic_chars.len() >= 4 && alphabetic_chars.iter().all(|c| c.is_uppercase()) && t.len() < 60 {
+    if alphabetic_chars.len() >= 4
+        && alphabetic_chars.iter().all(|c| c.is_uppercase())
+        && t.len() < 60
+    {
         return Some((1, t.to_string()));
     }
 
     let lower = t.to_lowercase();
     let common_titles = [
-        "abstract", "introduction", "existing system", "proposed system",
-        "system architecture", "hardware requirements", "software requirements",
-        "methodology", "literature survey", "conclusion", "references", "acknowledgement"
+        "abstract",
+        "introduction",
+        "existing system",
+        "proposed system",
+        "system architecture",
+        "hardware requirements",
+        "software requirements",
+        "methodology",
+        "literature survey",
+        "conclusion",
+        "references",
+        "acknowledgement",
     ];
     for title in &common_titles {
         if lower == *title || lower == format!("{}:", title) {
@@ -258,10 +276,14 @@ pub fn import_pdf(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Erro
                             if cur_type == num_type {
                                 items.push(item_text);
                             } else {
-                                blocks.push(PdfBlock::NumberList(num_type.to_string(), vec![item_text]));
+                                blocks.push(PdfBlock::NumberList(
+                                    num_type.to_string(),
+                                    vec![item_text],
+                                ));
                             }
                         } else {
-                            blocks.push(PdfBlock::NumberList(num_type.to_string(), vec![item_text]));
+                            blocks
+                                .push(PdfBlock::NumberList(num_type.to_string(), vec![item_text]));
                         }
                     }
                     ListPrefix::Bullet(bullet_type, item_text) => {
@@ -269,10 +291,16 @@ pub fn import_pdf(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Erro
                             if cur_type == bullet_type {
                                 items.push(item_text);
                             } else {
-                                blocks.push(PdfBlock::BulletList(bullet_type.to_string(), vec![item_text]));
+                                blocks.push(PdfBlock::BulletList(
+                                    bullet_type.to_string(),
+                                    vec![item_text],
+                                ));
                             }
                         } else {
-                            blocks.push(PdfBlock::BulletList(bullet_type.to_string(), vec![item_text]));
+                            blocks.push(PdfBlock::BulletList(
+                                bullet_type.to_string(),
+                                vec![item_text],
+                            ));
                         }
                     }
                 }
@@ -281,7 +309,8 @@ pub fn import_pdf(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Erro
 
             // Address line (ends with comma or is To / From)
             let is_addr = (line.ends_with(',') && line.len() < 50)
-                || (cur_address.is_empty() && (line == "To" || line == "To," || line == "From" || line == "From,"));
+                || (cur_address.is_empty()
+                    && (line == "To" || line == "To," || line == "From" || line == "From,"));
 
             if is_addr {
                 if !cur_para.is_empty() {
@@ -331,17 +360,28 @@ pub fn import_pdf(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Erro
         for block in blocks {
             match block {
                 PdfBlock::Heading(level, text) => {
-                    page_nodes.push(format!("      <h{}>{}</h{}>", level, escape_xml(&text), level));
+                    page_nodes.push(format!(
+                        "      <h{}>{}</h{}>",
+                        level,
+                        escape_xml(&text),
+                        level
+                    ));
                 }
                 PdfBlock::Paragraph(text) => {
                     page_nodes.push(format!("      <p>{}</p>", escape_xml(&text)));
                 }
                 PdfBlock::Blockquote(text) => {
-                    page_nodes.push(format!("      <blockquote>\n        <p>{}</p>\n      </blockquote>", escape_xml(&text)));
+                    page_nodes.push(format!(
+                        "      <blockquote>\n        <p>{}</p>\n      </blockquote>",
+                        escape_xml(&text)
+                    ));
                 }
                 PdfBlock::AddressBlock(lines) => {
                     let escaped_lines: Vec<String> = lines.iter().map(|l| escape_xml(l)).collect();
-                    page_nodes.push(format!("      <p>{}</p>", escaped_lines.join("<br />\n         ")));
+                    page_nodes.push(format!(
+                        "      <p>{}</p>",
+                        escaped_lines.join("<br />\n         ")
+                    ));
                 }
                 PdfBlock::BulletList(b_type, items) => {
                     let type_attr = if b_type != "disc" {
@@ -381,7 +421,10 @@ pub fn import_pdf(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Erro
     }
 
     if section_xmls.is_empty() {
-        section_xmls.push("    <section page-style=\"body\">\n      <p>Empty document</p>\n    </section>".to_string());
+        section_xmls.push(
+            "    <section page-style=\"body\">\n      <p>Empty document</p>\n    </section>"
+                .to_string(),
+        );
     }
 
     let dxml = format!(
@@ -508,7 +551,8 @@ th {
   background-color: #f8fafc;
   font-weight: bold;
 }
-"#.to_string();
+"#
+    .to_string();
 
     Ok(ImportResult {
         dxml,

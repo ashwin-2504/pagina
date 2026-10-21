@@ -1,6 +1,6 @@
 pub mod ast;
-pub mod parser;
 pub mod docx;
+pub mod parser;
 pub mod pdf;
 
 use serde::{Deserialize, Serialize};
@@ -21,7 +21,11 @@ pub fn parse_ddl_to_json(input: &str) -> Result<String, JsValue> {
     match parser.parse() {
         Ok(doc) => serde_json::to_string(&doc).map_err(|e| JsValue::from_str(&e.to_string())),
         Err(diags) => {
-            let err_msg = diags.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join(", ");
+            let err_msg = diags
+                .iter()
+                .map(|d| d.message.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
             Err(JsValue::from_str(&err_msg))
         }
     }
@@ -94,7 +98,7 @@ mod tests {
 
         let mut parser = parser::Parser::new(input);
         let doc = parser.parse().expect("Failed to parse");
-        
+
         // Export to DOCX
         let docx_bytes = docx::export_docx(&doc).expect("Failed to export docx");
         assert!(!docx_bytes.is_empty());
@@ -102,12 +106,70 @@ mod tests {
 
         // Import back from DOCX
         let import_res = docx::import_docx(&docx_bytes).expect("Failed to import docx");
-        assert!(import_res.dxml.contains("<h1>Modular Document Architecture</h1>"));
+        assert!(import_res
+            .dxml
+            .contains("<h1>Modular Document Architecture</h1>"));
         assert!(import_res.dxml.contains("<b>bold</b>"));
         assert!(import_res.dxml.contains("<table>"));
         assert!(import_res.dxml.contains("Col A"));
         assert!(import_res.dxml.contains("Data 1"));
         assert!(import_res.dcss.contains("h1 {"));
+    }
+
+    #[test]
+    fn test_docx_roundtrip_preserves_text_and_paragraph_formatting() {
+        let input = r#"<doc>
+  <props>
+    <paper size="A4" orientation="portrait" margin="20mm"/>
+    <style>
+      body { font-family: "Inter", sans-serif; font-size: 13pt; color: #123456; line-height: 1.5; }
+      h1 { font-size: 27pt; color: #654321; }
+    </style>
+  </props>
+  <body><section>
+    <h1>Precisely Styled Heading</h1>
+    <p style="margin-top: 3mm; margin-bottom: 4mm; line-height: 1.7; margin-left: 5mm; text-indent: 2mm;">Plain <span style="font-family: 'Courier New'; font-size: 15pt; color: #A1B2C3; background-color: #FFF2CC;">preserved text</span>.</p>
+  </section></body>
+</doc>"#;
+
+        let mut parser = parser::Parser::new(input);
+        let doc = parser.parse().expect("source document must parse");
+        let bytes = docx::export_docx(&doc).expect("DOCX export must succeed");
+
+        let mut archive =
+            zip::ZipArchive::new(std::io::Cursor::new(&bytes)).expect("DOCX must be a zip archive");
+        let mut styles_xml = String::new();
+        archive
+            .by_name("word/styles.xml")
+            .unwrap()
+            .read_to_string(&mut styles_xml)
+            .unwrap();
+        assert!(styles_xml.contains("w:ascii=\"Inter\""));
+        assert!(styles_xml.contains("w:sz w:val=\"26\""));
+        assert!(styles_xml.contains("w:color w:val=\"654321\""));
+
+        let mut document_xml = String::new();
+        archive
+            .by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut document_xml)
+            .unwrap();
+        assert!(document_xml.contains("w:before=\"170\""));
+        assert!(document_xml.contains("w:left=\"283\""));
+        assert!(document_xml.contains("w:rFonts w:ascii=\"Courier New\""));
+        assert!(document_xml.contains("w:sz w:val=\"30\""));
+        assert!(document_xml.contains("w:color w:val=\"A1B2C3\""));
+        assert!(document_xml.contains("w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"FFF2CC\""));
+
+        let imported = docx::import_docx(&bytes).expect("DOCX import must succeed");
+        assert!(imported.dcss.contains("\"Inter\""));
+        assert!(imported.dcss.contains("font-size: 13pt"));
+        assert!(imported.dcss.contains("font-size: 27pt"));
+        assert!(imported.dcss.contains("#654321"));
+        assert!(imported.dxml.contains("margin-top: 3"));
+        assert!(imported.dxml.contains("text-indent:"));
+        assert!(imported.dxml.contains("font-size: 15pt"));
+        assert!(imported.dxml.contains("color: #A1B2C3"));
     }
 
     #[test]
@@ -141,7 +203,9 @@ mod tests {
         let import_res = pdf::import_pdf(&pdf_bytes).expect("Failed to import pdf");
         assert!(import_res.dxml.contains("<doc>"));
         assert!(import_res.dxml.contains("<section"));
-        assert!(import_res.dxml.contains("Pagina is a native document typesetting engine."));
+        assert!(import_res
+            .dxml
+            .contains("Pagina is a native document typesetting engine."));
         assert!(import_res.dcss.contains("h1 {"));
     }
 
@@ -155,35 +219,78 @@ mod tests {
         let bytes = fs::read(file_path).expect("EVA Synopsis.docx must exist");
 
         // 1. Import DOCX into DXML & DCSS
-        let result = docx::import_docx(&bytes).expect("Should successfully import EVA Synopsis.docx");
+        let result =
+            docx::import_docx(&bytes).expect("Should successfully import EVA Synopsis.docx");
         assert!(result.dxml.contains("Information Technology Department"));
         assert!(result.dxml.contains("U.G. PROJECT REGISTRATION FORM"));
         assert!(result.dxml.contains("Gopale Ashwin Ashok"));
-        assert!(result.dxml.contains("EVA: Environmental Vision through Audio"));
+        assert!(result
+            .dxml
+            .contains("EVA: Environmental Vision through Audio"));
         assert!(result.dxml.contains("<table"));
         assert!(result.dxml.contains("borderless"));
         assert!(result.dxml.contains("<img"));
-        assert!(result.dxml.contains(r#"<img class="header-image" src="image1.png" />"#));
-        assert!(result.dxml.contains(r#"<img class="footer-image full-bleed" src="image2.png" />"#));
-        assert!(!result.dxml.contains("header-logo"), "Must not use rigid hardcoded header-logo class");
-        assert!(!result.dxml.contains("Imported Document"), "Must not emit fake placeholder header text");
-        assert!(!result.dxml.contains("Pagina Engine"), "Must not emit fake placeholder footer text");
+        assert!(result
+            .dxml
+            .contains(r#"<img class="header-image" src="image1.png" />"#));
+        assert!(result
+            .dxml
+            .contains(r#"<img class="footer-image full-bleed" src="image2.png" />"#));
+        assert!(
+            !result.dxml.contains("header-logo"),
+            "Must not use rigid hardcoded header-logo class"
+        );
+        assert!(
+            !result.dxml.contains("Imported Document"),
+            "Must not emit fake placeholder header text"
+        );
+        assert!(
+            !result.dxml.contains("Pagina Engine"),
+            "Must not emit fake placeholder footer text"
+        );
         assert!(result.dxml.contains("Dr. S. K. Korde"));
         assert!(result.dcss.contains("table {"));
         assert!(result.dcss.contains(".header-image"));
         assert!(result.dcss.contains(".footer-image.full-bleed"));
-        assert!(result.assets.contains_key("image1.png") || result.assets.contains_key("image2.png"), "Media assets must be extracted");
-        assert!(!result.dxml.contains("data:image/"), "DXML must not contain raw base64 data URLs");
-        assert!(result.dcss.contains("Times New Roman"), "DCSS must contain Times New Roman font");
-        assert!(result.dcss.contains("14pt"), "DCSS must contain accurate 14pt sizing");
-        println!("Extracted assets: {:?}", result.assets.keys().collect::<Vec<_>>());
-        println!("DXML snippet:\n{}", &result.dxml[..result.dxml.len().min(600)]);
-        println!("DCSS snippet:\n{}", &result.dcss[..result.dcss.len().min(400)]);
+        assert!(
+            result.assets.contains_key("image1.png") || result.assets.contains_key("image2.png"),
+            "Media assets must be extracted"
+        );
+        assert!(
+            !result.dxml.contains("data:image/"),
+            "DXML must not contain raw base64 data URLs"
+        );
+        assert!(
+            result.dcss.contains("Times New Roman"),
+            "DCSS must contain Times New Roman font"
+        );
+        assert!(
+            result.dcss.contains("14pt"),
+            "DCSS must contain accurate 14pt sizing"
+        );
+        println!(
+            "Extracted assets: {:?}",
+            result.assets.keys().collect::<Vec<_>>()
+        );
+        println!(
+            "DXML snippet:\n{}",
+            &result.dxml[..result.dxml.len().min(600)]
+        );
+        println!(
+            "DCSS snippet:\n{}",
+            &result.dcss[..result.dcss.len().min(400)]
+        );
         let ul_count = result.dxml.matches("<ul").count();
         let ol_count = result.dxml.matches("<ol").count();
         let li_count = result.dxml.matches("<li").count();
-        println!("EVA Synopsis DOCX Lists extracted -> ul: {}, ol: {}, li: {}", ul_count, ol_count, li_count);
-        assert!(ul_count > 0 || ol_count > 0, "Imported DOCX must extract bullet or numbered lists");
+        println!(
+            "EVA Synopsis DOCX Lists extracted -> ul: {}, ol: {}, li: {}",
+            ul_count, ol_count, li_count
+        );
+        assert!(
+            ul_count > 0 || ol_count > 0,
+            "Imported DOCX must extract bullet or numbered lists"
+        );
 
         // 2. Parse the produced DXML using Rust Parser
         let mut parser = parser::Parser::new(&result.dxml);
@@ -191,7 +298,8 @@ mod tests {
         assert!(!parsed_doc.body.children.is_empty());
 
         // 3. Re-export to DOCX
-        let reexported_docx = docx::export_docx(&parsed_doc).expect("Re-export to DOCX must succeed");
+        let reexported_docx =
+            docx::export_docx(&parsed_doc).expect("Re-export to DOCX must succeed");
         assert_eq!(&reexported_docx[0..2], b"PK");
 
         // 4. Re-export to PDF
@@ -213,7 +321,9 @@ mod tests {
         assert!(result.dxml.contains("Information Technology Department"));
         assert!(result.dxml.contains("U.G. PROJECT REGISTRATION FORM"));
         assert!(result.dxml.contains("Gopale Ashwin Ashok"));
-        assert!(result.dxml.contains("EVA: Environmental Vision through Audio"));
+        assert!(result
+            .dxml
+            .contains("EVA: Environmental Vision through Audio"));
 
         // 2. Parse the produced DXML using Rust Parser
         let mut parser = parser::Parser::new(&result.dxml);
@@ -225,7 +335,8 @@ mod tests {
         assert_eq!(&reexported_pdf[0..4], b"%PDF");
 
         // 4. Re-export to DOCX
-        let reexported_docx = docx::export_docx(&parsed_doc).expect("Re-export to DOCX must succeed");
+        let reexported_docx =
+            docx::export_docx(&parsed_doc).expect("Re-export to DOCX must succeed");
         assert_eq!(&reexported_docx[0..2], b"PK");
     }
 
@@ -289,8 +400,13 @@ mod tests {
 </doc>"#;
 
         let mut parser = parser::Parser::new(input);
-        let doc = parser.parse().expect("User document should parse successfully");
-        assert_eq!(doc.props.metadata.get("title").map(|s| s.as_str()), Some("Modular DDL Report"));
+        let doc = parser
+            .parse()
+            .expect("User document should parse successfully");
+        assert_eq!(
+            doc.props.metadata.get("title").map(|s| s.as_str()),
+            Some("Modular DDL Report")
+        );
         assert!(doc.props.page_styles.contains_key("body"));
 
         // 1. PDF Export
@@ -302,16 +418,33 @@ mod tests {
         assert_eq!(&docx_bytes[0..2], b"PK");
 
         // Inspect DOCX contents: verify header1.xml, footer1.xml, grid table, and entity decoding
-        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&docx_bytes)).expect("Must be valid zip archive");
-        assert!(archive.by_name("word/header1.xml").is_ok(), "Header1.xml must exist");
-        assert!(archive.by_name("word/footer1.xml").is_ok(), "Footer1.xml must exist");
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&docx_bytes))
+            .expect("Must be valid zip archive");
+        assert!(
+            archive.by_name("word/header1.xml").is_ok(),
+            "Header1.xml must exist"
+        );
+        assert!(
+            archive.by_name("word/footer1.xml").is_ok(),
+            "Footer1.xml must exist"
+        );
 
         let mut doc_xml = String::new();
-        archive.by_name("word/document.xml").unwrap().read_to_string(&mut doc_xml).unwrap();
+        archive
+            .by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut doc_xml)
+            .unwrap();
         println!("DOC_XML:\n{}", doc_xml);
         assert!(doc_xml.contains("Modular Document Architecture"));
-        assert!(doc_xml.contains("Technical Report") || archive.by_name("word/header1.xml").is_ok());
-        assert!(doc_xml.contains("&lt;link rel=&quot;stylesheet&quot; href=&quot;styles.css&quot; /&gt;"), "Entity must be properly escaped for Word XML so user sees <link>");
+        assert!(
+            doc_xml.contains("Technical Report") || archive.by_name("word/header1.xml").is_ok()
+        );
+        assert!(
+            doc_xml
+                .contains("&lt;link rel=&quot;stylesheet&quot; href=&quot;styles.css&quot; /&gt;"),
+            "Entity must be properly escaped for Word XML so user sees <link>"
+        );
         assert!(doc_xml.contains("Separation of Concerns:"));
         assert!(doc_xml.contains("Multi-Column Grid Flow"));
         assert!(doc_xml.contains("Left Column"));
@@ -395,17 +528,24 @@ mod tests {
         let doc = parser.parse().expect("Document should parse successfully");
 
         // 1. PDF Export
-        let pdf_bytes = pdf::export_pdf(&doc).expect("PDF export with all bullet types and formatting must succeed");
+        let pdf_bytes = pdf::export_pdf(&doc)
+            .expect("PDF export with all bullet types and formatting must succeed");
         assert_eq!(&pdf_bytes[0..4], b"%PDF");
 
         // 2. DOCX Export
-        let docx_bytes = docx::export_docx(&doc).expect("DOCX export with all formatting must succeed");
+        let docx_bytes =
+            docx::export_docx(&doc).expect("DOCX export with all formatting must succeed");
         assert_eq!(&docx_bytes[0..2], b"PK");
 
         // 3. Inspect Word XML to verify bullet symbols and indentations
-        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&docx_bytes)).expect("Must be valid zip archive");
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&docx_bytes))
+            .expect("Must be valid zip archive");
         let mut doc_xml = String::new();
-        archive.by_name("word/document.xml").unwrap().read_to_string(&mut doc_xml).unwrap();
+        archive
+            .by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut doc_xml)
+            .unwrap();
 
         assert!(doc_xml.contains("•"), "Must contain disc bullet");
         assert!(doc_xml.contains("◦"), "Must contain circle bullet");
@@ -420,11 +560,26 @@ mod tests {
         // 4. DOCX Import Roundtrip
         let imported = docx::import_docx(&docx_bytes).expect("DOCX import must succeed");
         assert!(imported.dxml.contains("Document Typography"));
-        assert!(imported.dxml.contains("<ul"), "Imported DXML must contain ul");
-        assert!(imported.dxml.contains("<ol"), "Imported DXML must contain ol");
-        assert!(imported.dcss.contains("body"), "Imported DCSS must contain typography");
-        assert!(imported.dcss.contains(".callout"), "Imported DCSS must contain callout padding");
-        assert!(imported.dcss.contains(".col-box"), "Imported DCSS must contain col-box padding");
+        assert!(
+            imported.dxml.contains("<ul"),
+            "Imported DXML must contain ul"
+        );
+        assert!(
+            imported.dxml.contains("<ol"),
+            "Imported DXML must contain ol"
+        );
+        assert!(
+            imported.dcss.contains("body"),
+            "Imported DCSS must contain typography"
+        );
+        assert!(
+            imported.dcss.contains(".callout"),
+            "Imported DCSS must contain callout padding"
+        );
+        assert!(
+            imported.dcss.contains(".col-box"),
+            "Imported DCSS must contain col-box padding"
+        );
     }
 
     #[test]
@@ -463,23 +618,40 @@ mod tests {
 </doc>"#;
 
         let mut parser = parser::Parser::new(input);
-        let doc = parser.parse().expect("Failed to parse nested list document");
+        let doc = parser
+            .parse()
+            .expect("Failed to parse nested list document");
 
         // 1. PDF Export
         let pdf_bytes = pdf::export_pdf(&doc).expect("PDF export with nested lists must succeed");
         assert_eq!(&pdf_bytes[0..4], b"%PDF");
 
         // 2. DOCX Export
-        let docx_bytes = docx::export_docx(&doc).expect("DOCX export with nested lists must succeed");
+        let docx_bytes =
+            docx::export_docx(&doc).expect("DOCX export with nested lists must succeed");
         assert_eq!(&docx_bytes[0..2], b"PK");
 
         // Verify DOCX contains multi-level numbering
-        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&docx_bytes)).expect("Must be zip");
+        let mut archive =
+            zip::ZipArchive::new(std::io::Cursor::new(&docx_bytes)).expect("Must be zip");
         let mut doc_xml = String::new();
-        archive.by_name("word/document.xml").unwrap().read_to_string(&mut doc_xml).unwrap();
-        assert!(doc_xml.contains("w:ilvl w:val=\"0\""), "Must contain level 0");
-        assert!(doc_xml.contains("w:ilvl w:val=\"1\""), "Must contain level 1");
-        assert!(doc_xml.contains("w:ilvl w:val=\"2\""), "Must contain level 2");
+        archive
+            .by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut doc_xml)
+            .unwrap();
+        assert!(
+            doc_xml.contains("w:ilvl w:val=\"0\""),
+            "Must contain level 0"
+        );
+        assert!(
+            doc_xml.contains("w:ilvl w:val=\"1\""),
+            "Must contain level 1"
+        );
+        assert!(
+            doc_xml.contains("w:ilvl w:val=\"2\""),
+            "Must contain level 2"
+        );
         assert!(doc_xml.contains("•"), "Must contain disc bullet");
         assert!(doc_xml.contains("◦"), "Must contain circle bullet");
         assert!(doc_xml.contains("▪"), "Must contain square bullet");
@@ -530,7 +702,8 @@ mod tests {
         assert!(!docx_bytes.is_empty());
         assert_eq!(&docx_bytes[0..2], b"PK");
 
-        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(docx_bytes)).expect("Must be valid zip");
+        let mut archive =
+            zip::ZipArchive::new(std::io::Cursor::new(docx_bytes)).expect("Must be valid zip");
         let mut has_media = false;
         for i in 0..archive.len() {
             let file = archive.by_index(i).unwrap();

@@ -175,8 +175,14 @@ impl<'a> Parser<'a> {
         true
     }
 
-    fn parse_doc_wrapper(&mut self, props: &mut DocumentProps, body: &mut BodyNode) -> Result<(), Vec<Diagnostic>> {
-        let (tag, _attrs, _) = self.parse_start_tag().map_err(|_| self.diagnostics.clone())?;
+    fn parse_doc_wrapper(
+        &mut self,
+        props: &mut DocumentProps,
+        body: &mut BodyNode,
+    ) -> Result<(), Vec<Diagnostic>> {
+        let (tag, _attrs, _) = self
+            .parse_start_tag()
+            .map_err(|_| self.diagnostics.clone())?;
         if tag != "doc" {
             return Ok(());
         }
@@ -307,13 +313,18 @@ impl<'a> Parser<'a> {
                 break;
             }
             if let Some(el) = self.parse_element() {
-                let text = el.children.iter().filter_map(|c| {
-                    if let Node::Text(t) = c {
-                        Some(t.content.clone())
-                    } else {
-                        None
-                    }
-                }).collect::<Vec<_>>().join("");
+                let text = el
+                    .children
+                    .iter()
+                    .filter_map(|c| {
+                        if let Node::Text(t) = c {
+                            Some(t.content.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
                 map.insert(el.tag, text.trim().to_string());
             } else {
                 self.advance();
@@ -354,7 +365,10 @@ impl<'a> Parser<'a> {
             return None;
         }
 
-        let name = attrs.get("name").cloned().unwrap_or_else(|| "default".to_string());
+        let name = attrs
+            .get("name")
+            .cloned()
+            .unwrap_or_else(|| "default".to_string());
         let is_default = attrs.get("default").map(|v| v == "true").unwrap_or(false);
 
         let mut page_style = PageStyle {
@@ -385,8 +399,14 @@ impl<'a> Parser<'a> {
                 if let Ok((_, wattrs, _)) = self.parse_start_tag() {
                     page_style.watermark = Some(WatermarkDef {
                         text: wattrs.get("text").cloned().unwrap_or_default(),
-                        opacity: wattrs.get("opacity").and_then(|v| v.parse().ok()).unwrap_or(0.1),
-                        angle_deg: wattrs.get("angle").and_then(|v| v.parse().ok()).unwrap_or(-45.0),
+                        opacity: wattrs
+                            .get("opacity")
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(0.1),
+                        angle_deg: wattrs
+                            .get("angle")
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(-45.0),
                     });
                 }
             } else {
@@ -600,7 +620,10 @@ impl<'a> Parser<'a> {
         }
 
         let page_style = attrs.get("page-style").cloned();
-        let page_break = attrs.get("page-break").map(|v| v == "true").unwrap_or(false);
+        let page_break = attrs
+            .get("page-break")
+            .map(|v| v == "true")
+            .unwrap_or(false);
 
         let mut children = Vec::new();
         if !is_self_closing {
@@ -659,11 +682,13 @@ impl<'a> Parser<'a> {
         };
 
         let id = attrs.get("id").cloned();
-        let classes = attrs.get("class")
+        let classes = attrs
+            .get("class")
             .map(|s| s.split_whitespace().map(|c| c.to_string()).collect())
             .unwrap_or_default();
 
-        let inline_styles = attrs.get("style")
+        let inline_styles = attrs
+            .get("style")
             .map(|s| parse_inline_styles(s))
             .unwrap_or_default();
 
@@ -671,7 +696,10 @@ impl<'a> Parser<'a> {
         let close_tag = format!("</{}>", tag);
 
         if !is_self_closing {
-            let is_block_container = matches!(tag.as_str(), "table" | "tr" | "grid" | "thead" | "tbody" | "page-styles");
+            let is_block_container = matches!(
+                tag.as_str(),
+                "table" | "tr" | "grid" | "thead" | "tbody" | "page-styles"
+            );
             while self.pos < self.chars.len() {
                 if is_block_container {
                     self.skip_whitespace();
@@ -817,7 +845,8 @@ fn parse_css(css: &str, base_offset: usize) -> Stylesheet {
         }
 
         if let Some((sel_str, decls_str)) = clean.split_once('{') {
-            let selectors = sel_str.split(',')
+            let selectors = sel_str
+                .split(',')
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect();
@@ -867,15 +896,27 @@ fn parse_length(s: &str) -> Length {
     let s = s.trim();
     if s.ends_with("mm") {
         let val = s.trim_end_matches("mm").trim().parse().unwrap_or(20.0);
-        Length { val, unit: Unit::Mm }
+        Length {
+            val,
+            unit: Unit::Mm,
+        }
     } else if s.ends_with("pt") {
         let val = s.trim_end_matches("pt").trim().parse().unwrap_or(12.0);
-        Length { val, unit: Unit::Pt }
+        Length {
+            val,
+            unit: Unit::Pt,
+        }
     } else if s.ends_with("in") {
         let val = s.trim_end_matches("in").trim().parse().unwrap_or(1.0);
-        Length { val, unit: Unit::Inch }
+        Length {
+            val,
+            unit: Unit::Inch,
+        }
     } else {
         let val = s.parse().unwrap_or(20.0);
-        Length { val, unit: Unit::Mm }
+        Length {
+            val,
+            unit: Unit::Mm,
+        }
     }
 }
