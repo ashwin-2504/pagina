@@ -293,6 +293,14 @@ export function App() {
         exportDdl = exportDdl.replaceAll(`src="${name}"`, `src="${dataUrl}"`);
         exportDdl = exportDdl.replaceAll(`src='${name}'`, `src='${dataUrl}'`);
       }
+
+      // Bundle active styles.dcss into exportDdl so Rust engine has full stylesheet
+      const dcssFile = files.find(f => f.name.endsWith('.dcss') || f.name.endsWith('.css'));
+      if (dcssFile && dcssFile.content && !exportDdl.includes(dcssFile.content.slice(0, 30))) {
+        if (exportDdl.includes('</props>')) {
+          exportDdl = exportDdl.replace('</props>', `  <style>\n${dcssFile.content}\n  </style>\n  </props>`);
+        }
+      }
       const blob = await exportDocument(format, exportDdl);
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');

@@ -507,8 +507,9 @@ fn parse_numbering_xml(xml: &str) -> NumberingInfo {
     }
 }
 
-fn parse_relationships(xml_str: &str) -> HashMap<String, String> {
-    let mut map = HashMap::new();
+fn parse_relationships(xml_str: &str) -> (HashMap<String, String>, HashMap<String, String>) {
+    let mut id_map = HashMap::new();
+    let mut type_map = HashMap::new();
     let mut reader = Reader::from_str(xml_str);
     let mut buf = Vec::new();
     loop {
@@ -517,6 +518,7 @@ fn parse_relationships(xml_str: &str) -> HashMap<String, String> {
                 if e.name().as_ref() == b"Relationship" {
                     let mut id = String::new();
                     let mut target = String::new();
+                    let mut rel_type = String::new();
                     for attr in e.attributes().flatten() {
                         if attr.key.as_ref() == b"Id" {
                             if let Ok(v) = std::str::from_utf8(&attr.value) {
@@ -526,10 +528,18 @@ fn parse_relationships(xml_str: &str) -> HashMap<String, String> {
                             if let Ok(v) = std::str::from_utf8(&attr.value) {
                                 target = v.to_string();
                             }
+                        } else if attr.key.as_ref() == b"Type" {
+                            if let Ok(v) = std::str::from_utf8(&attr.value) {
+                                rel_type = v.to_string();
+                            }
                         }
                     }
                     if !id.is_empty() && !target.is_empty() {
-                        map.insert(id, target);
+                        id_map.insert(id, target.clone());
+                    }
+                    if !rel_type.is_empty() && !target.is_empty() {
+                        let short_type = rel_type.split('/').last().unwrap_or(&rel_type).to_lowercase();
+                        type_map.insert(short_type, target);
                     }
                 }
             }
@@ -538,32 +548,379 @@ fn parse_relationships(xml_str: &str) -> HashMap<String, String> {
         }
         buf.clear();
     }
-    map
+    (id_map, type_map)
 }
 
-fn extract_image_rid_from_part_xml(xml_str: &str) -> Option<String> {
+fn extract_pt_from_style(style: &str, key: &str) -> Option<f32> {
+    if let Some(pos) = style.find(key) {
+        let after = &style[pos + key.len()..];
+        let num_str: String = after.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+        return num_str.parse::<f32>().ok();
+    }
+    None
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct ParsedGenericPart {
+    pub left_items: Vec<String>,
+    pub center_items: Vec<String>,
+    pub right_items: Vec<String>,
+    pub has_full_bleed: bool,
+    pub max_image_height_mm: Option<f32>,
+}
+
+impl ParsedGenericPart {
+    pub fn is_empty(&self) -> bool {
+        self.left_items.is_empty() && self.center_items.is_empty() && self.right_items.is_empty()
+    }
+
+    pub fn to_dxml(&self, tag_name: &str) -> String {
+        if self.is_empty() {
+            return String::new();
+        }
+
+        let mut out = format!("        <{}>\n", tag_name);
+        if !self.left_items.is_empty() {
+            out.push_str("          <left>\n");
+            for item in &self.left_items {
+                out.push_str(&format!("            {}\n", item));
+            }
+            out.push_str("          </left>\n");
+        }
+        if !self.center_items.is_empty() {
+            out.push_str("          <center>\n");
+            for item in &self.center_items {
+                out.push_str(&format!("            {}\n", item));
+            }
+            out.push_str("          </center>\n");
+        }
+        if !self.right_items.is_empty() {
+            out.push_str("          <right>\n");
+            for item in &self.right_items {
+                out.push_str(&format!("            {}\n", item));
+            }
+            out.push_str("          </right>\n");
+        }
+        out.push_str(&format!("        </{}>", tag_name));
+        out
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PartImg {
+    r_id: String,
+    cx: Option<u64>,
+    cy: Option<u64>,
+    pos_offset: Option<i64>,
+    vml_style: String,
+}
+
+fn parse_generic_part(
+    xml_str: &str,
+    rels: &HashMap<String, String>,
+    is_footer: bool,
+) -> ParsedGenericPart {
+    let mut part = ParsedGenericPart::default();
     let mut reader = Reader::from_str(xml_str);
+    reader.config_mut().trim_text(false);
+
+    let mut current_p_align: Option<String> = None;
+    let mut current_p_texts: Vec<String> = Vec::new();
+    let mut current_p_images: Vec<PartImg> = Vec::new();
+
+    let mut in_r = false;
+    let mut in_t = false;
+    let mut in_pos_offset = false;
+    let mut is_bold = false;
+    let mut is_italic = false;
+    let mut is_underline = false;
+    let mut current_text = String::new();
+
+    let mut current_cx: Option<u64> = None;
+    let mut current_cy: Option<u64> = None;
+    let mut current_pos_offset: Option<i64> = None;
+    let mut current_vml_style = String::new();
+
+    let mut in_instr_text = false;
+    let mut instr_text = String::new();
+
     let mut buf = Vec::new();
+
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
                 let name = e.name();
-                if name.as_ref() == b"a:blip" {
-                    for attr in e.attributes().flatten() {
-                        if attr.key.as_ref() == b"r:embed" {
-                            if let Ok(v) = std::str::from_utf8(&attr.value) {
-                                return Some(v.to_string());
+                match name.as_ref() {
+                    b"w:p" => {
+                        current_p_align = None;
+                        current_p_texts.clear();
+                        current_p_images.clear();
+                        current_cx = None;
+                        current_cy = None;
+                        current_pos_offset = None;
+                        current_vml_style.clear();
+                    }
+                    b"w:jc" => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:val" {
+                                if let Ok(v) = std::str::from_utf8(&attr.value) {
+                                    current_p_align = Some(v.to_string());
+                                }
                             }
                         }
                     }
-                } else if name.as_ref() == b"v:imagedata" {
-                    for attr in e.attributes().flatten() {
-                        if attr.key.as_ref() == b"r:id" {
-                            if let Ok(v) = std::str::from_utf8(&attr.value) {
-                                return Some(v.to_string());
+                    b"w:r" => {
+                        in_r = true;
+                        is_bold = false;
+                        is_italic = false;
+                        is_underline = false;
+                    }
+                    b"w:b" => {
+                        if in_r {
+                            let mut disabled = false;
+                            for attr in e.attributes().flatten() {
+                                if attr.key.as_ref() == b"w:val" {
+                                    if attr.value.as_ref() == b"0"
+                                        || attr.value.as_ref() == b"false"
+                                        || attr.value.as_ref() == b"none"
+                                    {
+                                        disabled = true;
+                                    }
+                                }
+                            }
+                            if !disabled {
+                                is_bold = true;
                             }
                         }
                     }
+                    b"w:i" => {
+                        if in_r {
+                            let mut disabled = false;
+                            for attr in e.attributes().flatten() {
+                                if attr.key.as_ref() == b"w:val" {
+                                    if attr.value.as_ref() == b"0"
+                                        || attr.value.as_ref() == b"false"
+                                        || attr.value.as_ref() == b"none"
+                                    {
+                                        disabled = true;
+                                    }
+                                }
+                            }
+                            if !disabled {
+                                is_italic = true;
+                            }
+                        }
+                    }
+                    b"w:u" => {
+                        if in_r {
+                            let mut disabled = false;
+                            for attr in e.attributes().flatten() {
+                                if attr.key.as_ref() == b"w:val" {
+                                    if attr.value.as_ref() == b"0"
+                                        || attr.value.as_ref() == b"none"
+                                        || attr.value.as_ref() == b"nil"
+                                    {
+                                        disabled = true;
+                                    }
+                                }
+                            }
+                            if !disabled {
+                                is_underline = true;
+                            }
+                        }
+                    }
+                    b"w:t" => {
+                        in_t = true;
+                        current_text.clear();
+                    }
+                    b"w:instrText" => {
+                        in_instr_text = true;
+                        instr_text.clear();
+                    }
+                    b"w:fldSimple" => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:instr" {
+                                if let Ok(val) = std::str::from_utf8(&attr.value) {
+                                    let upper = val.to_uppercase();
+                                    if upper.contains("PAGE") && !upper.contains("NUMPAGES") {
+                                        current_p_texts.push("<page-number/>".to_string());
+                                    } else if upper.contains("NUMPAGES") {
+                                        current_p_texts.push("<total-pages/>".to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    b"wp:posOffset" => {
+                        in_pos_offset = true;
+                    }
+                    b"wp:extent" | b"a:ext" => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"cx" {
+                                if let Ok(s) = std::str::from_utf8(&attr.value) {
+                                    current_cx = s.parse::<u64>().ok();
+                                }
+                            } else if attr.key.as_ref() == b"cy" {
+                                if let Ok(s) = std::str::from_utf8(&attr.value) {
+                                    current_cy = s.parse::<u64>().ok();
+                                }
+                            }
+                        }
+                    }
+                    b"a:blip" => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"r:embed" {
+                                if let Ok(rid) = std::str::from_utf8(&attr.value) {
+                                    if !current_p_images.iter().any(|im| im.r_id == rid) {
+                                        current_p_images.push(PartImg {
+                                            r_id: rid.to_string(),
+                                            cx: current_cx,
+                                            cy: current_cy,
+                                            pos_offset: current_pos_offset,
+                                            vml_style: current_vml_style.clone(),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    b"v:shape" => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"style" {
+                                if let Ok(st) = std::str::from_utf8(&attr.value) {
+                                    current_vml_style = st.to_string();
+                                }
+                            }
+                        }
+                    }
+                    b"v:imagedata" => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"r:id" {
+                                if let Ok(rid) = std::str::from_utf8(&attr.value) {
+                                    if !current_p_images.iter().any(|im| im.r_id == rid) {
+                                        current_p_images.push(PartImg {
+                                            r_id: rid.to_string(),
+                                            cx: current_cx,
+                                            cy: current_cy,
+                                            pos_offset: current_pos_offset,
+                                            vml_style: current_vml_style.clone(),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::Text(ref e)) => {
+                if in_t {
+                    if let Ok(t) = e.unescape() {
+                        current_text.push_str(&t);
+                    }
+                } else if in_instr_text {
+                    if let Ok(t) = e.unescape() {
+                        instr_text.push_str(&t);
+                    }
+                } else if in_pos_offset {
+                    if let Ok(t) = e.unescape() {
+                        if let Ok(val) = t.trim().parse::<i64>() {
+                            current_pos_offset = Some(val);
+                        }
+                    }
+                }
+            }
+            Ok(Event::End(ref e)) => {
+                let name = e.name();
+                match name.as_ref() {
+                    b"w:t" => {
+                        in_t = false;
+                        if !current_text.trim().is_empty() {
+                            let mut s = escape_xml(&current_text);
+                            if is_bold {
+                                s = format!("<b>{}</b>", s);
+                            }
+                            if is_italic {
+                                s = format!("<i>{}</i>", s);
+                            }
+                            if is_underline {
+                                s = format!("<u>{}</u>", s);
+                            }
+                            current_p_texts.push(s);
+                        }
+                    }
+                    b"w:instrText" => {
+                        in_instr_text = false;
+                        let upper = instr_text.to_uppercase();
+                        if upper.contains("PAGE") && !upper.contains("NUMPAGES") {
+                            current_p_texts.push("<page-number/>".to_string());
+                        } else if upper.contains("NUMPAGES") {
+                            current_p_texts.push("<total-pages/>".to_string());
+                        }
+                    }
+                    b"wp:posOffset" => {
+                        in_pos_offset = false;
+                    }
+                    b"w:r" => {
+                        in_r = false;
+                    }
+                    b"w:p" => {
+                        for img in &current_p_images {
+                            if let Some(fname) = rels.get(&img.r_id) {
+                                let is_bleed = img.pos_offset.map(|o| o < -50000).unwrap_or(false)
+                                    || img.cx.map(|cx| cx >= 7000000).unwrap_or(false)
+                                    || img.vml_style.contains("margin-left:-")
+                                    || img.vml_style.contains("width:612")
+                                    || img.vml_style.contains("width:595");
+                                if is_bleed {
+                                    part.has_full_bleed = true;
+                                }
+
+                                let mut height_mm = img.cy.map(|cy| (cy as f32) / 914400.0 * 25.4);
+                                if height_mm.is_none() && !img.vml_style.is_empty() {
+                                    if let Some(h_pt) = extract_pt_from_style(&img.vml_style, "height:") {
+                                        height_mm = Some(h_pt * 25.4 / 72.0);
+                                    }
+                                }
+                                if let Some(h) = height_mm {
+                                    part.max_image_height_mm = Some(
+                                        part.max_image_height_mm.map(|p| p.max(h)).unwrap_or(h)
+                                    );
+                                }
+
+                                let base_class = if is_footer { "footer-image" } else { "header-image" };
+                                let class_attr = if is_bleed {
+                                    format!("{} full-bleed", base_class)
+                                } else {
+                                    base_class.to_string()
+                                };
+                                let img_dxml = format!(r#"<img class="{}" src="{}" />"#, class_attr, fname);
+
+                                if current_p_align.as_deref() == Some("left") {
+                                    part.left_items.push(img_dxml);
+                                } else if current_p_align.as_deref() == Some("right") {
+                                    part.right_items.push(img_dxml);
+                                } else {
+                                    part.center_items.push(img_dxml);
+                                }
+                            }
+                        }
+
+                        if !current_p_texts.is_empty() {
+                            let text_content = current_p_texts.join(" ");
+                            let dxml_text = format!("<text>{}</text>", text_content);
+                            if current_p_align.as_deref() == Some("right")
+                                || (current_p_texts.iter().any(|t| t.contains("page-number")) && current_p_align.is_none())
+                            {
+                                part.right_items.push(dxml_text);
+                            } else if current_p_align.as_deref() == Some("center") {
+                                part.center_items.push(dxml_text);
+                            } else {
+                                part.left_items.push(dxml_text);
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
             Ok(Event::Eof) | Err(_) => break,
@@ -571,7 +928,8 @@ fn extract_image_rid_from_part_xml(xml_str: &str) -> Option<String> {
         }
         buf.clear();
     }
-    None
+
+    part
 }
 
 pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Error + Send + Sync>> {
@@ -617,7 +975,7 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
     }
 
     // 2. Parse relationship files to map rId -> clean filename (e.g. "image1.png")
-    let doc_rels = {
+    let (doc_id_rels, doc_type_rels) = {
         let mut xml = String::new();
         if let Ok(mut f) = archive.by_name("word/_rels/document.xml.rels") {
             let _ = f.read_to_string(&mut xml);
@@ -625,7 +983,7 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
         parse_relationships(&xml)
     };
 
-    let doc_img_rels: HashMap<String, String> = doc_rels
+    let doc_img_rels: HashMap<String, String> = doc_id_rels
         .iter()
         .filter_map(|(id, target)| {
             let direct = media_path_to_filename.get(target);
@@ -634,50 +992,67 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
         })
         .collect();
 
-    // 3. Extract Header and Footer images if present
-    let (header_img_filename, _header_is_bleed) = {
-        let mut h_rels_xml = String::new();
-        if let Ok(mut f) = archive.by_name("word/_rels/header1.xml.rels") {
-            let _ = f.read_to_string(&mut h_rels_xml);
-        }
-        let h_rels = parse_relationships(&h_rels_xml);
+    // 3. Extract Header and Footer generically if present
+    let parsed_header = {
+        let target = doc_type_rels.get("header").cloned().unwrap_or_else(|| "header1.xml".to_string());
+        let part_name = if target.starts_with("word/") { target.clone() } else { format!("word/{}", target) };
+        let rels_name = format!("word/_rels/{}.rels", target.split('/').last().unwrap_or(&target));
+
         let mut h_xml = String::new();
-        if let Ok(mut f) = archive.by_name("word/header1.xml") {
+        if let Ok(mut f) = archive.by_name(&part_name) {
             let _ = f.read_to_string(&mut h_xml);
         }
-        let fname = extract_image_rid_from_part_xml(&h_xml).and_then(|rid| {
-            h_rels.get(&rid).and_then(|tgt| {
-                let direct = media_path_to_filename.get(tgt);
-                let fallback = media_path_to_filename.get(tgt.split('/').last().unwrap_or(tgt));
-                direct.or(fallback).cloned()
+
+        let mut h_rels_xml = String::new();
+        if let Ok(mut f) = archive.by_name(&rels_name) {
+            let _ = f.read_to_string(&mut h_rels_xml);
+        }
+        let (raw_h_rels, _) = parse_relationships(&h_rels_xml);
+        let h_rels: HashMap<String, String> = raw_h_rels
+            .into_iter()
+            .filter_map(|(id, tgt)| {
+                let direct = media_path_to_filename.get(&tgt);
+                let fallback = media_path_to_filename.get(tgt.split('/').last().unwrap_or(&tgt));
+                direct.or(fallback).map(|fname| (id, fname.clone()))
             })
-        });
-        (fname, false)
+            .collect();
+
+        if !h_xml.is_empty() {
+            parse_generic_part(&h_xml, &h_rels, false)
+        } else {
+            ParsedGenericPart::default()
+        }
     };
 
-    let (footer_img_filename, footer_is_full_bleed) = {
-        let mut f_rels_xml = String::new();
-        if let Ok(mut f) = archive.by_name("word/_rels/footer1.xml.rels") {
-            let _ = f.read_to_string(&mut f_rels_xml);
-        }
-        let f_rels = parse_relationships(&f_rels_xml);
+    let parsed_footer = {
+        let target = doc_type_rels.get("footer").cloned().unwrap_or_else(|| "footer1.xml".to_string());
+        let part_name = if target.starts_with("word/") { target.clone() } else { format!("word/{}", target) };
+        let rels_name = format!("word/_rels/{}.rels", target.split('/').last().unwrap_or(&target));
+
         let mut f_xml = String::new();
-        if let Ok(mut f) = archive.by_name("word/footer1.xml") {
+        if let Ok(mut f) = archive.by_name(&part_name) {
             let _ = f.read_to_string(&mut f_xml);
         }
-        let is_bleed = f_xml.contains("-914400")
-            || f_xml.contains("margin-left:-")
-            || f_xml.contains("cx=\"77")
-            || f_xml.contains("cx=\"78")
-            || f_xml.contains("612.23pt");
-        let fname = extract_image_rid_from_part_xml(&f_xml).and_then(|rid| {
-            f_rels.get(&rid).and_then(|tgt| {
-                let direct = media_path_to_filename.get(tgt);
-                let fallback = media_path_to_filename.get(tgt.split('/').last().unwrap_or(tgt));
-                direct.or(fallback).cloned()
+
+        let mut f_rels_xml = String::new();
+        if let Ok(mut f) = archive.by_name(&rels_name) {
+            let _ = f.read_to_string(&mut f_rels_xml);
+        }
+        let (raw_f_rels, _) = parse_relationships(&f_rels_xml);
+        let f_rels: HashMap<String, String> = raw_f_rels
+            .into_iter()
+            .filter_map(|(id, tgt)| {
+                let direct = media_path_to_filename.get(&tgt);
+                let fallback = media_path_to_filename.get(tgt.split('/').last().unwrap_or(&tgt));
+                direct.or(fallback).map(|fname| (id, fname.clone()))
             })
-        });
-        (fname, is_bleed)
+            .collect();
+
+        if !f_xml.is_empty() {
+            parse_generic_part(&f_xml, &f_rels, true)
+        } else {
+            ParsedGenericPart::default()
+        }
     };
 
     let numbering_info = {
@@ -1406,32 +1781,32 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
         }
     }
 
-    let header_xml = if let Some(ref fname) = header_img_filename {
-        format!(
-            r#"        <running-header>
-          <center><img src="{}" style="max-height: 25mm; max-width: 100%;" /></center>
-        </running-header>"#,
-            fname
-        )
-    } else {
-        r#"        <running-header>
-          <left><text>Imported Document</text></left>
-          <right><page-number/> of <total-pages/></right>
-        </running-header>"#.to_string()
-    };
+    let header_xml = parsed_header.to_dxml("running-header");
+    let footer_xml = parsed_footer.to_dxml("running-footer");
 
-    let footer_xml = if let Some(ref fname) = footer_img_filename {
-        let bleed_attr = if footer_is_full_bleed { " class=\"full-bleed\"" } else { "" };
+    let mut page_style_inner = String::new();
+    if !header_xml.is_empty() {
+        page_style_inner.push_str(&header_xml);
+        page_style_inner.push('\n');
+    }
+    if !footer_xml.is_empty() {
+        page_style_inner.push_str(&footer_xml);
+        page_style_inner.push('\n');
+    }
+
+    let page_styles_block = if !page_style_inner.is_empty() {
         format!(
-            r#"        <running-footer>
-          <center><img{} src="{}" style="width: 100%;" /></center>
-        </running-footer>"#,
-            bleed_attr, fname
+            r#"    <page-styles>
+      <page-style name="body" default="true">
+{}
+      </page-style>
+    </page-styles>"#,
+            page_style_inner.trim_end()
         )
     } else {
-        r#"        <running-footer>
-          <center><text>Pagina Engine</text></center>
-        </running-footer>"#.to_string()
+        r#"    <page-styles>
+      <page-style name="body" default="true" />
+    </page-styles>"#.to_string()
     };
 
     let dxml = format!(
@@ -1443,12 +1818,7 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
     </meta>
     <paper size="{}" orientation="{}" margin="{}mm" />
     <link rel="stylesheet" href="styles.dcss" />
-    <page-styles>
-      <page-style name="body" default="true">
 {}
-{}
-      </page-style>
-    </page-styles>
   </props>
 
   <body>
@@ -1460,8 +1830,7 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
         paper_size,
         paper_orientation,
         paper_margin_mm,
-        header_xml,
-        footer_xml,
+        page_styles_block,
         if body_nodes.is_empty() {
             "      <p>Empty document</p>".to_string()
         } else {
@@ -1518,6 +1887,11 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
         .max_by_key(|&(_, count)| count)
         .map(|(c, _)| c)
         .unwrap_or_else(|| "#000000".to_string());
+
+    let header_max_h = parsed_header
+        .max_image_height_mm
+        .map(|h| (h + 1.0).round().max(25.0) as u32)
+        .unwrap_or(35);
 
     let dcss = format!(
         r#"/* Generated by Pagina OpenXML Reverse Engine */
@@ -1664,6 +2038,80 @@ p[align="right"] {{
 p[align="justify"] {{
   text-align: justify;
 }}
+
+/* Header & Footer Layout & Positioning */
+header, running-header, .running-header {{
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 3mm;
+}}
+
+.running-header .header-left, header .header-left {{
+  text-align: left;
+}}
+
+.running-header .header-center, header .header-center {{
+  text-align: center;
+}}
+
+.running-header .header-right, header .header-right {{
+  text-align: right;
+}}
+
+.header-image, running-header img, header img {{
+  max-height: {header_max_h}mm;
+  width: auto;
+  max-width: 100%;
+  display: block;
+  margin: 0 auto;
+}}
+
+footer, running-footer, .running-footer {{
+  width: 100%;
+  margin-top: auto;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}}
+
+.running-footer .footer-left, footer .footer-left {{
+  text-align: left;
+}}
+
+.running-footer .footer-center, footer .footer-center {{
+  text-align: center;
+}}
+
+.running-footer .footer-right, footer .footer-right {{
+  text-align: right;
+}}
+
+.footer-image, running-footer img, footer img {{
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 0 auto;
+}}
+
+.footer-image.full-bleed,
+.header-image.full-bleed,
+running-footer.full-bleed,
+footer.full-bleed,
+img.full-bleed,
+.full-bleed {{
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 100% !important;
+  height: auto;
+  max-height: 35mm;
+  display: block;
+  margin: 0;
+  padding: 0;
+  z-index: 10;
+}}
 "#,
         font_family_stack = font_family_stack,
         body_pt = body_pt,
@@ -1671,7 +2119,8 @@ p[align="justify"] {{
         h2_pt = h2_pt,
         h3_pt = h3_pt,
         lead_pt = body_pt + 1.0,
-        primary_color = primary_color
+        primary_color = primary_color,
+        header_max_h = header_max_h
     );
 
     Ok(ImportResult { dxml, dcss, assets })

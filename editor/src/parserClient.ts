@@ -79,7 +79,7 @@ export function parseDdlClient(input: string, externalStylesheets?: Record<strin
     // Also check if any standalone external style should be loaded by default if no links specified
     if (rules.length === 0 && externalStylesheets) {
       for (const [filename, css] of Object.entries(externalStylesheets)) {
-        if (filename.endsWith('.css')) {
+        if (filename.endsWith('.css') || filename.endsWith('.dcss')) {
           parseCssIntoRules(css, rules);
         }
       }
@@ -98,18 +98,32 @@ export function parseDdlClient(input: string, externalStylesheets?: Record<strin
         const footerEl = p.querySelector('running-footer');
         const watermarkEl = p.querySelector('watermark');
 
+        let headerLeft = parseChildNodes(headerEl?.querySelector('left') || null);
+        let headerCenter = parseChildNodes(headerEl?.querySelector('center') || null);
+        let headerRight = parseChildNodes(headerEl?.querySelector('right') || null);
+        if (headerEl && headerLeft.length === 0 && headerCenter.length === 0 && headerRight.length === 0) {
+          headerCenter = parseChildNodes(headerEl);
+        }
+
+        let footerLeft = parseChildNodes(footerEl?.querySelector('left') || null);
+        let footerCenter = parseChildNodes(footerEl?.querySelector('center') || null);
+        let footerRight = parseChildNodes(footerEl?.querySelector('right') || null);
+        if (footerEl && footerLeft.length === 0 && footerCenter.length === 0 && footerRight.length === 0) {
+          footerCenter = parseChildNodes(footerEl);
+        }
+
         pageStyles[name] = {
           name,
           is_default: isDefault,
           running_header: headerEl ? {
-            left: parseChildNodes(headerEl.querySelector('left')),
-            center: parseChildNodes(headerEl.querySelector('center')),
-            right: parseChildNodes(headerEl.querySelector('right')),
+            left: headerLeft,
+            center: headerCenter,
+            right: headerRight,
           } : undefined,
           running_footer: footerEl ? {
-            left: parseChildNodes(footerEl.querySelector('left')),
-            center: parseChildNodes(footerEl.querySelector('center')),
-            right: parseChildNodes(footerEl.querySelector('right')),
+            left: footerLeft,
+            center: footerCenter,
+            right: footerRight,
           } : undefined,
           watermark: watermarkEl ? {
             text: watermarkEl.getAttribute('text') || '',

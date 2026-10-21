@@ -245,22 +245,28 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error, 
 
                 if (hasCenter && !hasLeft && !hasRight) {
                   return (
-                    <div style={{
+                    <header className="running-header header-center-only" style={{
                       width: '100%',
                       textAlign: 'center',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
                       borderBottom: hasImg ? 'none' : '1px solid #e2e8f0',
                       paddingBottom: hasImg ? '0' : '3mm',
                       marginBottom: hasImg ? '3mm' : '8mm',
                       fontSize: '9pt',
                       userSelect: 'none',
                     }}>
-                      <RenderChildren nodes={pageStyle.running_header.center} />
-                    </div>
+                      <div className="header-center" style={{ width: '100%', display: 'flex', justifyContent: 'center' }}>
+                        <RenderChildren nodes={pageStyle.running_header.center} />
+                      </div>
+                    </header>
                   );
                 }
 
                 return (
-                  <div style={{
+                  <header className="running-header" style={{
                     display: 'flex',
                     justifyContent: 'space-between',
                     alignItems: 'center',
@@ -271,10 +277,10 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error, 
                     color: '#64748b',
                     userSelect: 'none',
                   }}>
-                    <div style={{ flex: hasLeft ? 1 : 0, textAlign: 'left' }}><RenderChildren nodes={pageStyle.running_header.left} /></div>
-                    <div style={{ flex: hasCenter ? 2 : 0, textAlign: 'center' }}><RenderChildren nodes={pageStyle.running_header.center} /></div>
-                    <div style={{ flex: hasRight ? 1 : 0, textAlign: 'right' }}><RenderChildren nodes={pageStyle.running_header.right} /></div>
-                  </div>
+                    <div className="header-left" style={{ flex: hasLeft ? 1 : 0, textAlign: 'left' }}><RenderChildren nodes={pageStyle.running_header.left} /></div>
+                    <div className="header-center" style={{ flex: hasCenter ? 2 : 0, textAlign: 'center' }}><RenderChildren nodes={pageStyle.running_header.center} /></div>
+                    <div className="header-right" style={{ flex: hasRight ? 1 : 0, textAlign: 'right' }}><RenderChildren nodes={pageStyle.running_header.right} /></div>
+                  </header>
                 );
               })()}
 
@@ -292,7 +298,7 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error, 
                       ? pageStyle.running_footer.left
                       : pageStyle.running_footer.right);
                   return (
-                    <div style={{
+                    <footer className="running-footer full-bleed" style={{
                       position: 'absolute',
                       bottom: 0,
                       left: 0,
@@ -302,14 +308,14 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error, 
                       userSelect: 'none',
                     }}>
                       <RenderChildren nodes={bleedNodes} />
-                    </div>
+                    </footer>
                   );
                 }
                 const hasImg = hasImageNode(pageStyle.running_footer.center) ||
                                hasImageNode(pageStyle.running_footer.left) ||
                                hasImageNode(pageStyle.running_footer.right);
                 return (
-                  <div style={{
+                  <footer className="running-footer" style={{
                     marginTop: 'auto',
                     borderTop: hasImg ? 'none' : '1px solid #e2e8f0',
                     paddingTop: hasImg ? '0' : '3mm',
@@ -320,10 +326,10 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error, 
                     color: '#94a3b8',
                     userSelect: 'none',
                   }}>
-                    <div style={{ flex: 1, textAlign: 'left' }}><RenderChildren nodes={pageStyle.running_footer.left} /></div>
-                    <div style={{ flex: 1, textAlign: 'center' }}><RenderChildren nodes={pageStyle.running_footer.center} /></div>
-                    <div style={{ flex: 1, textAlign: 'right' }}><RenderChildren nodes={pageStyle.running_footer.right} /></div>
-                  </div>
+                    <div className="footer-left" style={{ flex: 1, textAlign: 'left' }}><RenderChildren nodes={pageStyle.running_footer.left} /></div>
+                    <div className="footer-center" style={{ flex: 1, textAlign: 'center' }}><RenderChildren nodes={pageStyle.running_footer.center} /></div>
+                    <div className="footer-right" style={{ flex: 1, textAlign: 'right' }}><RenderChildren nodes={pageStyle.running_footer.right} /></div>
+                  </footer>
                 );
               })()}
             </div>
@@ -415,9 +421,63 @@ const RenderElement: React.FC<{ el: ElementNode }> = ({ el }) => {
         style={{
           maxWidth: '100%',
           display: 'block',
+          margin: '0 auto',
           ...styleObj,
         }}
       />
+    );
+  }
+
+  if (tagLower === 'center') {
+    return (
+      <div
+        className={className}
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          textAlign: 'center',
+          width: '100%',
+          ...styleObj,
+        }}
+        {...attributes}
+      >
+        <RenderChildren nodes={children} />
+      </div>
+    );
+  }
+
+  if (tagLower === 'left') {
+    return (
+      <div
+        className={className}
+        style={{
+          textAlign: 'left',
+          ...styleObj,
+        }}
+        {...attributes}
+      >
+        <RenderChildren nodes={children} />
+      </div>
+    );
+  }
+
+  if (tagLower === 'right') {
+    return (
+      <div
+        className={className}
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'flex-end',
+          textAlign: 'right',
+          ...styleObj,
+        }}
+        {...attributes}
+      >
+        <RenderChildren nodes={children} />
+      </div>
     );
   }
 

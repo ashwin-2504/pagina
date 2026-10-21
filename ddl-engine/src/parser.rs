@@ -248,6 +248,21 @@ impl<'a> Parser<'a> {
                 props.paper = self.parse_paper();
             } else if self.starts_with("<style") {
                 props.stylesheet = self.parse_style_tag();
+            } else if self.starts_with("<link") {
+                if let Ok((_tag, attrs, _)) = self.parse_start_tag() {
+                    if let Some(href) = attrs.get("href") {
+                        for prefix in &["", "assets/", "../"] {
+                            let path = format!("{}{}", prefix, href);
+                            if let Ok(css_content) = std::fs::read_to_string(&path) {
+                                let wrapped_css = format!("<style>{}</style>", css_content);
+                                let mut css_parser = Parser::new(&wrapped_css);
+                                let ss = css_parser.parse_style_tag();
+                                props.stylesheet.rules.extend(ss.rules);
+                                break;
+                            }
+                        }
+                    }
+                }
             } else if self.starts_with("<page-styles") {
                 props.page_styles = self.parse_page_styles();
             } else if self.starts_with("<meta") {
@@ -408,6 +423,8 @@ impl<'a> Parser<'a> {
             } else if self.starts_with("<right>") {
                 self.advance_str("<right>");
                 def.right = self.collect_until("</right>");
+            } else if let Some(node) = self.parse_node() {
+                def.center.push(node);
             } else {
                 self.advance();
             }

@@ -124,9 +124,10 @@ pub fn export_pdf(doc: &Document) -> Result<Vec<u8>, Box<dyn std::error::Error +
     let margin_mm = doc.props.paper.margin.val;
     let left_margin = margin_mm.max(12.0);
     let right_margin = margin_mm.max(12.0);
-    let top_margin = (margin_mm * 1.1).max(22.0);
-    let bottom_margin = (margin_mm * 1.0).max(18.0);
     let content_width = width_mm - left_margin - right_margin;
+    let (header_clearance, footer_clearance) = get_header_and_footer_heights(doc, width_mm, content_width);
+    let top_margin = (margin_mm * 1.1).max(22.0).max(header_clearance);
+    let bottom_margin = (margin_mm * 1.0).max(18.0).max(footer_clearance);
 
     // Draw header and footer on page 1
     draw_running_header_footer(
@@ -261,6 +262,71 @@ fn draw_image_on_layer(
     printpdf_img.add_to_layer(layer.clone(), transform);
 }
 
+fn get_header_and_footer_heights(doc: &Document, width_mm: f32, content_width: f32) -> (f32, f32) {
+    let ps = get_active_page_style(doc);
+    let mut header_h = 0.0f32;
+    let mut footer_h = 0.0f32;
+
+    if let Some(p) = ps {
+        if let Some(h) = p.running_header.as_ref() {
+            let img_opt = find_img_in_nodes(&h.center)
+                .or_else(|| find_img_in_nodes(&h.left))
+                .or_else(|| find_img_in_nodes(&h.right));
+            if let Some(img_el) = img_opt {
+                if let Some(src) = img_el.attributes.get("src") {
+                    if let Some(bytes) = load_image_bytes(src) {
+                        if let Ok(dyn_img) = ::image::load_from_memory(&bytes) {
+                            let px_w = dyn_img.width() as f32;
+                            let px_h = dyn_img.height() as f32;
+                            let aspect = if px_w > 0.0 { px_h / px_w } else { 0.2 };
+                            let max_target_h = 35.0_f32;
+                            let target_w = content_width.min(max_target_h / aspect);
+                            let target_h = target_w * aspect;
+                            header_h = target_h + 8.0;
+                        }
+                    }
+                }
+            }
+            if header_h == 0.0 && (!h.left.is_empty() || !h.center.is_empty() || !h.right.is_empty()) {
+                header_h = 16.0;
+            }
+        }
+
+        if let Some(f) = p.running_footer.as_ref() {
+            let img_opt = find_img_in_nodes(&f.center)
+                .or_else(|| find_img_in_nodes(&f.left))
+                .or_else(|| find_img_in_nodes(&f.right));
+            if let Some(img_el) = img_opt {
+                if let Some(src) = img_el.attributes.get("src") {
+                    if let Some(bytes) = load_image_bytes(src) {
+                        if let Ok(dyn_img) = ::image::load_from_memory(&bytes) {
+                            let px_w = dyn_img.width() as f32;
+                            let px_h = dyn_img.height() as f32;
+                            let aspect = if px_w > 0.0 { px_h / px_w } else { 0.15 };
+                            let is_full_bleed = img_el.classes.iter().any(|c| c == "full-bleed")
+                                || aspect < 0.22
+                                || img_el.inline_styles.get("width").map(|s| s.contains("100%")).unwrap_or(false);
+                            if is_full_bleed {
+                                let target_h = width_mm * aspect;
+                                footer_h = target_h + 6.0;
+                            } else {
+                                let target_w = content_width.min(180.0);
+                                let target_h = (target_w * aspect).min(25.0);
+                                footer_h = target_h + 8.0;
+                            }
+                        }
+                    }
+                }
+            }
+            if footer_h == 0.0 && (!f.left.is_empty() || !f.center.is_empty() || !f.right.is_empty()) {
+                footer_h = 14.0;
+            }
+        }
+    }
+
+    (header_h, footer_h)
+}
+
 fn draw_running_header_footer(
     layer: &PdfLayerReference,
     page_num: usize,
@@ -290,7 +356,7 @@ fn draw_running_header_footer(
                     let px_w = dyn_img.width() as f32;
                     let px_h = dyn_img.height() as f32;
                     let aspect = if px_w > 0.0 { px_h / px_w } else { 0.2 };
-                    let max_target_h = 28.0_f32;
+                    let max_target_h = 35.0_f32;
                     let target_w = content_width.min(max_target_h / aspect);
                     let target_h = target_w * aspect;
                     let img_x = left_margin + (content_width - target_w) / 2.0;
@@ -303,53 +369,59 @@ fn draw_running_header_footer(
     }
 
     if !drew_header_image {
-        let left_text = ps
-            .and_then(|p| p.running_header.as_ref())
-            .map(|h| extract_nodes_text(&h.left))
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| {
-                doc.props
-                    .metadata
-                    .get("title")
-                    .cloned()
-                    .unwrap_or_else(|| "Technical Report".to_string())
-            });
+        if let Some(h) = ps.and_then(|p| p.running_header.as_ref()) {
+            let left_text = extract_nodes_text(&h.left);
+            let center_text = extract_nodes_text(&h.center);
+            let right_text = extract_nodes_text(&h.right);
+            let display_right = if !right_text.is_empty() {
+                right_text.replace("<page-number/>", &format!("{}", page_num))
+            } else if !left_text.is_empty() || !center_text.is_empty() {
+                format!("{} of 1", page_num)
+            } else {
+                String::new()
+            };
 
-        let right_text = format!("{} of 1", page_num);
+            if !left_text.is_empty() || !center_text.is_empty() || !display_right.is_empty() {
+                layer.set_fill_color(Color::Rgb(Rgb::new(
+                    100.0 / 255.0,
+                    116.0 / 255.0,
+                    139.0 / 255.0,
+                    None,
+                )));
 
-        // Color: #64748B (Slate Gray)
-        layer.set_fill_color(Color::Rgb(Rgb::new(
-            100.0 / 255.0,
-            116.0 / 255.0,
-            139.0 / 255.0,
-            None,
-        )));
+                let header_y = height_mm - 11.5;
+                if !left_text.is_empty() {
+                    layer.use_text(&left_text, 8.5, Mm(left_margin), Mm(header_y), font_reg);
+                }
+                if !center_text.is_empty() {
+                    let center_w = (center_text.len() as f32) * 8.5 * 0.19;
+                    let center_x = (left_margin + (content_width - center_w) / 2.0).max(left_margin);
+                    layer.use_text(&center_text, 8.5, Mm(center_x), Mm(header_y), font_reg);
+                }
+                if !display_right.is_empty() {
+                    let right_w = (display_right.len() as f32) * 8.5 * 0.19;
+                    let right_x = (left_margin + content_width - right_w).max(left_margin);
+                    layer.use_text(&display_right, 8.5, Mm(right_x), Mm(header_y), font_reg);
+                }
 
-        // Running Header text
-        let header_y = height_mm - 11.5;
-        layer.use_text(&left_text, 8.5, Mm(left_margin), Mm(header_y), font_reg);
-
-        let right_w = (right_text.len() as f32) * 8.5 * 0.19;
-        let right_x = (left_margin + content_width - right_w).max(left_margin);
-        layer.use_text(&right_text, 8.5, Mm(right_x), Mm(header_y), font_reg);
-
-        // Running Header thin rule line (#CBD5E1)
-        let rule_y = height_mm - 14.0;
-        layer.set_outline_color(Color::Rgb(Rgb::new(
-            203.0 / 255.0,
-            213.0 / 255.0,
-            225.0 / 255.0,
-            None,
-        )));
-        layer.set_outline_thickness(0.5);
-        let points = vec![
-            (Point::new(Mm(left_margin), Mm(rule_y)), false),
-            (Point::new(Mm(left_margin + content_width), Mm(rule_y)), false),
-        ];
-        layer.add_line(Line {
-            points,
-            is_closed: false,
-        });
+                let rule_y = height_mm - 14.0;
+                layer.set_outline_color(Color::Rgb(Rgb::new(
+                    203.0 / 255.0,
+                    213.0 / 255.0,
+                    225.0 / 255.0,
+                    None,
+                )));
+                layer.set_outline_thickness(0.5);
+                let points = vec![
+                    (Point::new(Mm(left_margin), Mm(rule_y)), false),
+                    (Point::new(Mm(left_margin + content_width), Mm(rule_y)), false),
+                ];
+                layer.add_line(Line {
+                    points,
+                    is_closed: false,
+                });
+            }
+        }
     }
 
     // 2. Check if running footer contains an image
@@ -393,23 +465,35 @@ fn draw_running_header_footer(
     }
 
     if !drew_footer_image {
-        let footer_text = ps
-            .and_then(|p| p.running_footer.as_ref())
-            .map(|f| extract_nodes_text(&f.center))
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "Pagina Document Typesetting System".to_string());
+        if let Some(f) = ps.and_then(|p| p.running_footer.as_ref()) {
+            let left_text = extract_nodes_text(&f.left);
+            let center_text = extract_nodes_text(&f.center);
+            let right_text = extract_nodes_text(&f.right);
 
-        layer.set_fill_color(Color::Rgb(Rgb::new(
-            100.0 / 255.0,
-            116.0 / 255.0,
-            139.0 / 255.0,
-            None,
-        )));
+            if !left_text.is_empty() || !center_text.is_empty() || !right_text.is_empty() {
+                layer.set_fill_color(Color::Rgb(Rgb::new(
+                    100.0 / 255.0,
+                    116.0 / 255.0,
+                    139.0 / 255.0,
+                    None,
+                )));
 
-        let footer_y = 10.5;
-        let footer_w = (footer_text.len() as f32) * 8.5 * 0.19;
-        let footer_x = (left_margin + (content_width - footer_w) / 2.0).max(left_margin);
-        layer.use_text(&footer_text, 8.5, Mm(footer_x), Mm(footer_y), font_reg);
+                let footer_y = 10.5;
+                if !left_text.is_empty() {
+                    layer.use_text(&left_text, 8.5, Mm(left_margin), Mm(footer_y), font_reg);
+                }
+                if !center_text.is_empty() {
+                    let footer_w = (center_text.len() as f32) * 8.5 * 0.19;
+                    let footer_x = (left_margin + (content_width - footer_w) / 2.0).max(left_margin);
+                    layer.use_text(&center_text, 8.5, Mm(footer_x), Mm(footer_y), font_reg);
+                }
+                if !right_text.is_empty() {
+                    let right_w = (right_text.len() as f32) * 8.5 * 0.19;
+                    let right_x = (left_margin + content_width - right_w).max(left_margin);
+                    layer.use_text(&right_text, 8.5, Mm(right_x), Mm(footer_y), font_reg);
+                }
+            }
+        }
     }
 
     // Reset fill color to Dark Slate #0f172a

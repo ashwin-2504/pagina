@@ -180,17 +180,22 @@ fn extract_nodes_plain_text(nodes: &[Node]) -> String {
 
 fn generate_header_xml(doc: &Document) -> String {
     let ps = get_active_page_style(doc);
-    let left_text = ps
-        .and_then(|p| p.running_header.as_ref())
-        .map(|h| extract_nodes_plain_text(&h.left))
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| {
-            doc.props
-                .metadata
-                .get("title")
-                .cloned()
-                .unwrap_or_else(|| "Document".to_string())
-        });
+    let running_header = match ps.and_then(|p| p.running_header.as_ref()) {
+        Some(h) => h,
+        None => {
+            return r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>"#.to_string();
+        }
+    };
+
+    let left_text = extract_nodes_plain_text(&running_header.left);
+    let _right_text = extract_nodes_plain_text(&running_header.right);
+    let left_display = if !left_text.is_empty() {
+        left_text
+    } else {
+        extract_nodes_plain_text(&running_header.center)
+    };
 
     let is_letter = doc.props.paper.size.to_lowercase() == "letter";
     let is_landscape = doc.props.paper.orientation.to_lowercase() == "landscape";
@@ -256,17 +261,33 @@ fn generate_header_xml(doc: &Document) -> String {
   </w:p>
 </w:hdr>"#,
         tab_pos,
-        escape_xml(&left_text)
+        escape_xml(&left_display)
     )
 }
 
 fn generate_footer_xml(doc: &Document) -> String {
     let ps = get_active_page_style(doc);
-    let center_text = ps
-        .and_then(|p| p.running_footer.as_ref())
-        .map(|f| extract_nodes_plain_text(&f.center))
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "Pagina Typesetting System".to_string());
+    let running_footer = match ps.and_then(|p| p.running_footer.as_ref()) {
+        Some(f) => f,
+        None => {
+            return r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>"#.to_string();
+        }
+    };
+
+    let center_text = extract_nodes_plain_text(&running_footer.center);
+    let footer_text = if !center_text.is_empty() {
+        center_text
+    } else {
+        extract_nodes_plain_text(&running_footer.left)
+    };
+
+    if footer_text.is_empty() {
+        return r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>"#.to_string();
+    }
 
     format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -290,7 +311,7 @@ fn generate_footer_xml(doc: &Document) -> String {
     </w:r>
   </w:p>
 </w:ftr>"#,
-        escape_xml(&center_text)
+        escape_xml(&footer_text)
     )
 }
 
