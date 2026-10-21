@@ -112,6 +112,29 @@ html, body, #root {
   margin: 0;
 }
 
+/* Table Layout and Borderless Styling */
+.ddl-paper table.borderless,
+.ddl-paper table.borderless th,
+.ddl-paper table.borderless td {
+  border: none !important;
+  background: transparent !important;
+}
+
+.ddl-paper table.align-right {
+  margin-left: auto !important;
+  margin-right: 0 !important;
+  width: 48% !important;
+}
+
+.ddl-paper table {
+  border-collapse: collapse;
+}
+
+.ddl-paper img {
+  max-width: 100%;
+  height: auto;
+}
+
 /* High-Fidelity Vector PDF Printing */
 @media print {
   @page {

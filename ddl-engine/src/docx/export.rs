@@ -1,13 +1,97 @@
 use crate::ast::{Document, ElementNode, Node, PageStyle};
+use base64::Engine;
+use std::collections::HashMap;
 use std::io::{Cursor, Write};
 use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
+
+#[derive(Debug, Clone)]
+struct ImageEntry {
+    r_id: String,
+    filename: String,
+    bytes: Vec<u8>,
+    width_px: u32,
+    height_px: u32,
+}
+
+fn collect_images_from_doc(doc: &Document) -> HashMap<String, ImageEntry> {
+    let mut map = HashMap::new();
+    let mut counter = 1;
+
+    fn walk_nodes(nodes: &[Node], counter: &mut usize, map: &mut HashMap<String, ImageEntry>) {
+        for n in nodes {
+            match n {
+                Node::Element(el) => {
+                    if el.tag.to_lowercase() == "img" {
+                        if let Some(src) = el.attributes.get("src") {
+                            if !map.contains_key(src) {
+                                let (bytes, ext) = if src.starts_with("data:image/") {
+                                    if let Some(pos) = src.find(',') {
+                                        let meta = &src[..pos];
+                                        let ext = if meta.contains("jpeg") || meta.contains("jpg") {
+                                            "jpeg"
+                                        } else if meta.contains("gif") {
+                                            "gif"
+                                        } else if meta.contains("webp") {
+                                            "webp"
+                                        } else {
+                                            "png"
+                                        };
+                                        if let Ok(b) = base64::engine::general_purpose::STANDARD.decode(src[pos + 1..].trim()) {
+                                            (b, ext)
+                                        } else {
+                                            (Vec::new(), ext)
+                                        }
+                                    } else {
+                                        (Vec::new(), "png")
+                                    }
+                                } else if let Ok(b) = std::fs::read(src) {
+                                    (b, "png")
+                                } else {
+                                    (Vec::new(), "png")
+                                };
+
+                                if !bytes.is_empty() {
+                                    let (w, h) = if let Ok(dyn_img) = ::image::load_from_memory(&bytes) {
+                                        (dyn_img.width(), dyn_img.height())
+                                    } else {
+                                        (800, 600)
+                                    };
+
+                                    let entry = ImageEntry {
+                                        r_id: format!("rIdImg_{}", counter),
+                                        filename: format!("image_{}.{}", counter, ext),
+                                        bytes,
+                                        width_px: w,
+                                        height_px: h,
+                                    };
+                                    map.insert(src.clone(), entry);
+                                    *counter += 1;
+                                }
+                            }
+                        }
+                    }
+                    walk_nodes(&el.children, counter, map);
+                }
+                Node::Section(sec) => {
+                    walk_nodes(&sec.children, counter, map);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    walk_nodes(&doc.body.children, &mut counter, &mut map);
+    map
+}
 
 pub fn export_docx(doc: &Document) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
     let cursor = Cursor::new(Vec::new());
     let mut zip = ZipWriter::new(cursor);
     let options = SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
+
+    let images = collect_images_from_doc(doc);
 
     // 1. [Content_Types].xml
     zip.start_file("[Content_Types].xml", options)?;
@@ -18,27 +102,47 @@ pub fn export_docx(doc: &Document) -> Result<Vec<u8>, Box<dyn std::error::Error 
     zip.write_all(RELS_XML.as_bytes())?;
 
     // 3. word/_rels/document.xml.rels
-    zip.start_file("word/_rels/document.xml.rels", options)?;
-    zip.write_all(WORD_RELS_XML.as_bytes())?;
+    let mut word_rels = String::from(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+  <Relationship Id="rIdH1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>
+  <Relationship Id="rIdF1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>
+"#);
+    for entry in images.values() {
+        word_rels.push_str(&format!(
+            "  <Relationship Id=\"{}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"media/{}\"/>\n",
+            entry.r_id, entry.filename
+        ));
+    }
+    word_rels.push_str("</Relationships>");
 
-    // 4. word/styles.xml
+    zip.start_file("word/_rels/document.xml.rels", options)?;
+    zip.write_all(word_rels.as_bytes())?;
+
+    // 4. Write image binary files to word/media/
+    for entry in images.values() {
+        zip.start_file(format!("word/media/{}", entry.filename), options)?;
+        zip.write_all(&entry.bytes)?;
+    }
+
+    // 5. word/styles.xml
     zip.start_file("word/styles.xml", options)?;
     let styles_xml = generate_styles_xml(doc);
     zip.write_all(styles_xml.as_bytes())?;
 
-    // 5. word/header1.xml
+    // 6. word/header1.xml
     zip.start_file("word/header1.xml", options)?;
     let header_xml = generate_header_xml(doc);
     zip.write_all(header_xml.as_bytes())?;
 
-    // 6. word/footer1.xml
+    // 7. word/footer1.xml
     zip.start_file("word/footer1.xml", options)?;
     let footer_xml = generate_footer_xml(doc);
     zip.write_all(footer_xml.as_bytes())?;
 
-    // 7. word/document.xml
+    // 8. word/document.xml
     zip.start_file("word/document.xml", options)?;
-    let doc_xml = generate_document_xml(doc);
+    let doc_xml = generate_document_xml(doc, &images);
     zip.write_all(doc_xml.as_bytes())?;
 
     let finished_cursor = zip.finish()?;
@@ -182,12 +286,12 @@ fn generate_footer_xml(doc: &Document) -> String {
     )
 }
 
-fn generate_document_xml(doc: &Document) -> String {
+fn generate_document_xml(doc: &Document, images: &HashMap<String, ImageEntry>) -> String {
     let mut body_xml = String::new();
 
     // Convert all body children
     for child in &doc.body.children {
-        convert_node(child, &mut body_xml);
+        convert_node(child, images, &mut body_xml);
     }
 
     // Section properties (A4 default: 11906 x 16838 dxa, Letter: 12240 x 15840)
@@ -325,11 +429,16 @@ fn to_roman(mut n: usize) -> String {
     res
 }
 
-fn convert_node(node: &Node, out: &mut String) {
-    convert_node_with_indent(node, 0, out);
+fn convert_node(node: &Node, images: &HashMap<String, ImageEntry>, out: &mut String) {
+    convert_node_with_indent(node, 0, images, out);
 }
 
-fn convert_node_with_indent(node: &Node, indent_level: usize, out: &mut String) {
+fn convert_node_with_indent(
+    node: &Node,
+    indent_level: usize,
+    images: &HashMap<String, ImageEntry>,
+    out: &mut String,
+) {
     match node {
         Node::Text(t) => {
             let trimmed = t.content.trim();
@@ -343,7 +452,7 @@ fn convert_node_with_indent(node: &Node, indent_level: usize, out: &mut String) 
         Node::Comment(_) => {}
         Node::Section(sec) => {
             for child in &sec.children {
-                convert_node_with_indent(child, indent_level, out);
+                convert_node_with_indent(child, indent_level, images, out);
             }
         }
         Node::Element(el) => {
@@ -428,6 +537,7 @@ fn convert_node_with_indent(node: &Node, indent_level: usize, out: &mut String) 
                                             convert_node_with_indent(
                                                 &Node::Element(nested_list.clone()),
                                                 indent_level + 1,
+                                                images,
                                                 out,
                                             );
                                         }
@@ -481,6 +591,7 @@ fn convert_node_with_indent(node: &Node, indent_level: usize, out: &mut String) 
                                             convert_node_with_indent(
                                                 &Node::Element(nested_list.clone()),
                                                 indent_level + 1,
+                                                images,
                                                 out,
                                             );
                                         }
@@ -490,11 +601,14 @@ fn convert_node_with_indent(node: &Node, indent_level: usize, out: &mut String) 
                         }
                     }
                 }
+                "img" => {
+                    emit_image(el, images, out);
+                }
                 "table" => {
                     emit_table(el, out);
                 }
                 "grid" => {
-                    emit_grid(el, out);
+                    emit_grid(el, images, out);
                 }
                 "hr" => {
                     out.push_str(
@@ -515,7 +629,7 @@ fn convert_node_with_indent(node: &Node, indent_level: usize, out: &mut String) 
                         out.push_str("</w:p>\n");
                     } else {
                         for child in &el.children {
-                            convert_node_with_indent(child, indent_level, out);
+                            convert_node_with_indent(child, indent_level, images, out);
                         }
                     }
                 }
@@ -648,7 +762,7 @@ fn emit_inline_runs(
     }
 }
 
-fn emit_grid(el: &ElementNode, out: &mut String) {
+fn emit_grid(el: &ElementNode, images: &HashMap<String, ImageEntry>, out: &mut String) {
     let col_divs: Vec<&ElementNode> = el
         .children
         .iter()
@@ -749,7 +863,7 @@ fn emit_grid(el: &ElementNode, out: &mut String) {
         ));
 
         for child in &col.children {
-            convert_node(child, out);
+            convert_node(child, images, out);
         }
 
         out.push_str("    </w:tc>\n");
@@ -758,11 +872,112 @@ fn emit_grid(el: &ElementNode, out: &mut String) {
     out.push_str("  </w:tr>\n</w:tbl>\n");
 }
 
+fn emit_image(el: &ElementNode, images: &HashMap<String, ImageEntry>, out: &mut String) {
+    let src = match el.attributes.get("src") {
+        Some(s) if !s.is_empty() => s,
+        _ => return,
+    };
+
+    let entry = match images.get(src) {
+        Some(e) => e,
+        None => return,
+    };
+
+    let align = el.attributes.get("align").map(|s| s.as_str()).unwrap_or("center");
+    let jc = match align {
+        "left" => "left",
+        "right" => "right",
+        _ => "center",
+    };
+
+    let max_cx = 5400000u64;
+    let cx = if entry.width_px > 0 {
+        let desired = (entry.width_px as u64) * 9525;
+        desired.min(max_cx)
+    } else {
+        max_cx
+    };
+
+    let cy = if entry.width_px > 0 && entry.height_px > 0 {
+        cx * (entry.height_px as u64) / (entry.width_px as u64)
+    } else {
+        cx * 3 / 4
+    };
+
+    let id = entry.r_id.trim_start_matches("rIdImg_").parse::<u32>().unwrap_or(1);
+
+    out.push_str(&format!(
+        r#"<w:p>
+  <w:pPr><w:jc w:val="{jc}"/></w:pPr>
+  <w:r>
+    <w:drawing>
+      <wp:inline distT="0" distB="0" distL="0" distR="0">
+        <wp:extent cx="{cx}" cy="{cy}"/>
+        <wp:effectExtent l="0" t="0" r="0" b="0"/>
+        <wp:docPr id="{id}" name="Picture {id}"/>
+        <wp:cNvGraphicFramePr>
+          <a:graphicFrameLocks xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" noChangeAspect="1"/>
+        </wp:cNvGraphicFramePr>
+        <a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+          <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+            <pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+              <pic:nvPicPr>
+                <pic:cNvPr id="{id}" name="image_{id}"/>
+                <pic:cNvPicPr/>
+                <pic:nvPr/>
+              </pic:nvPicPr>
+              <pic:blipFill>
+                <a:blip xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:embed="{r_id}"/>
+                <a:stretch><a:fillRect/></a:stretch>
+              </pic:blipFill>
+              <pic:spPr>
+                <a:xfrm><a:off x="0" y="0"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm>
+                <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+              </pic:spPr>
+            </pic:pic>
+          </a:graphicData>
+        </a:graphic>
+      </wp:inline>
+    </w:drawing>
+  </w:r>
+</w:p>
+"#,
+        jc = jc,
+        cx = cx,
+        cy = cy,
+        id = id,
+        r_id = entry.r_id
+    ));
+}
+
 fn emit_table(el: &ElementNode, out: &mut String) {
+    let is_borderless = el.classes.iter().any(|c| c == "borderless")
+        || el.attributes.get("class").map(|c| c.contains("borderless")).unwrap_or(false)
+        || el.inline_styles.get("border").map(|b| b.contains("none")).unwrap_or(false);
+
+    let is_align_right = el.classes.iter().any(|c| c == "align-right")
+        || el.attributes.get("class").map(|c| c.contains("align-right")).unwrap_or(false)
+        || el.attributes.get("align").map(|a| a == "right").unwrap_or(false)
+        || el.inline_styles.get("margin-left").map(|m| m.contains("auto")).unwrap_or(false);
+
     out.push_str("<w:tbl>\n");
-    out.push_str(r#"  <w:tblPr>
-    <w:tblW w:w="5000" w:type="pct"/>
-    <w:tblBorders>
+    out.push_str("  <w:tblPr>\n");
+    if is_align_right {
+        out.push_str("    <w:tblInd w:w=\"7359\" w:type=\"dxa\"/>\n");
+    }
+    out.push_str("    <w:tblW w:w=\"5000\" w:type=\"pct\"/>\n");
+    if is_borderless {
+        out.push_str(r#"    <w:tblBorders>
+      <w:top w:val="nil"/>
+      <w:left w:val="nil"/>
+      <w:bottom w:val="nil"/>
+      <w:right w:val="nil"/>
+      <w:insideH w:val="nil"/>
+      <w:insideV w:val="nil"/>
+    </w:tblBorders>
+"#);
+    } else {
+        out.push_str(r#"    <w:tblBorders>
       <w:top w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/>
       <w:left w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/>
       <w:bottom w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/>
@@ -770,8 +985,9 @@ fn emit_table(el: &ElementNode, out: &mut String) {
       <w:insideH w:val="single" w:sz="4" w:space="0" w:color="E2E8F0"/>
       <w:insideV w:val="single" w:sz="4" w:space="0" w:color="E2E8F0"/>
     </w:tblBorders>
-  </w:tblPr>
 "#);
+    }
+    out.push_str("  </w:tblPr>\n");
 
     let mut rows: Vec<&ElementNode> = Vec::new();
     collect_rows(el, &mut rows);
@@ -782,7 +998,7 @@ fn emit_table(el: &ElementNode, out: &mut String) {
             if let Node::Element(cell) = child {
                 let cell_tag = cell.tag.to_lowercase();
                 if cell_tag == "td" || cell_tag == "th" {
-                    let is_header = cell_tag == "th";
+                    let is_header = !is_borderless && cell_tag == "th";
                     out.push_str("    <w:tc>\n");
                     out.push_str("      <w:tcPr>\n");
                     out.push_str(
@@ -794,11 +1010,37 @@ fn emit_table(el: &ElementNode, out: &mut String) {
         </w:tcMar>
 "#,
                     );
+                    if is_borderless {
+                        out.push_str(r#"        <w:tcBorders>
+          <w:top w:val="nil"/>
+          <w:left w:val="nil"/>
+          <w:bottom w:val="nil"/>
+          <w:right w:val="nil"/>
+        </w:tcBorders>
+"#);
+                    }
                     if is_header {
                         out.push_str("        <w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"F8FAFC\"/>\n");
                     }
                     out.push_str("      </w:tcPr>\n");
-                    out.push_str("      <w:p>");
+
+                    let cell_align = cell.attributes.get("align").map(|s| s.as_str()).or_else(|| {
+                        cell.children.iter().find_map(|c| {
+                            if let Node::Element(p) = c {
+                                p.attributes.get("align").map(|s| s.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                    });
+
+                    let ppr = match cell_align {
+                        Some("center") => "<w:pPr><w:jc w:val=\"center\"/></w:pPr>",
+                        Some("right") => "<w:pPr><w:jc w:val=\"right\"/></w:pPr>",
+                        _ => "",
+                    };
+
+                    out.push_str(&format!("      <w:p>{}", ppr));
                     emit_inline_runs(cell, is_header, false, false, false, false, false, false, out);
                     out.push_str("</w:p>\n");
                     out.push_str("    </w:tc>\n");
@@ -913,6 +1155,12 @@ const CONTENT_TYPES_XML: &str = r#"<?xml version="1.0" encoding="UTF-8" standalo
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
   <Default Extension="xml" ContentType="application/xml"/>
+  <Default Extension="png" ContentType="image/png"/>
+  <Default Extension="jpeg" ContentType="image/jpeg"/>
+  <Default Extension="jpg" ContentType="image/jpeg"/>
+  <Default Extension="gif" ContentType="image/gif"/>
+  <Default Extension="bmp" ContentType="image/bmp"/>
+  <Default Extension="webp" ContentType="image/webp"/>
   <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
   <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
   <Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>
@@ -924,6 +1172,7 @@ const RELS_XML: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
 </Relationships>"#;
 
+#[allow(dead_code)]
 const WORD_RELS_XML: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>

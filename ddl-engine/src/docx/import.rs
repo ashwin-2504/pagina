@@ -1,6 +1,8 @@
 use crate::ImportResult;
+use base64::Engine;
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
+use std::collections::HashMap;
 use std::io::{Cursor, Read};
 
 #[derive(Debug, Clone)]
@@ -133,8 +135,13 @@ enum ImportedBlock {
     Callout(String),
     Blockquote(String),
     List(Vec<FlatListItem>),
-    Table(Vec<Vec<Vec<String>>>),
+    Table {
+        rows: Vec<Vec<Vec<String>>>,
+        is_borderless: bool,
+        is_align_right: bool,
+    },
     Grid(Vec<Vec<String>>),
+    Image(String),
 }
 
 fn format_coalesced_inlines(tokens: &[InlineToken]) -> String {
@@ -500,8 +507,168 @@ fn parse_numbering_xml(xml: &str) -> NumberingInfo {
     }
 }
 
+fn parse_relationships(xml_str: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    let mut reader = Reader::from_str(xml_str);
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                if e.name().as_ref() == b"Relationship" {
+                    let mut id = String::new();
+                    let mut target = String::new();
+                    for attr in e.attributes().flatten() {
+                        if attr.key.as_ref() == b"Id" {
+                            if let Ok(v) = std::str::from_utf8(&attr.value) {
+                                id = v.to_string();
+                            }
+                        } else if attr.key.as_ref() == b"Target" {
+                            if let Ok(v) = std::str::from_utf8(&attr.value) {
+                                target = v.to_string();
+                            }
+                        }
+                    }
+                    if !id.is_empty() && !target.is_empty() {
+                        map.insert(id, target);
+                    }
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    map
+}
+
+fn extract_image_rid_from_part_xml(xml_str: &str) -> Option<String> {
+    let mut reader = Reader::from_str(xml_str);
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                let name = e.name();
+                if name.as_ref() == b"a:blip" {
+                    for attr in e.attributes().flatten() {
+                        if attr.key.as_ref() == b"r:embed" {
+                            if let Ok(v) = std::str::from_utf8(&attr.value) {
+                                return Some(v.to_string());
+                            }
+                        }
+                    }
+                } else if name.as_ref() == b"v:imagedata" {
+                    for attr in e.attributes().flatten() {
+                        if attr.key.as_ref() == b"r:id" {
+                            if let Ok(v) = std::str::from_utf8(&attr.value) {
+                                return Some(v.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    None
+}
+
 pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Error + Send + Sync>> {
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
+
+    // 1. Extract all media files into data URLs
+    let mut media_store: HashMap<String, String> = HashMap::new();
+    for i in 0..archive.len() {
+        if let Ok(mut file) = archive.by_index(i) {
+            let name = file.name().to_string();
+            let is_media = name.contains("media/")
+                || name.ends_with(".png")
+                || name.ends_with(".jpg")
+                || name.ends_with(".jpeg")
+                || name.ends_with(".gif")
+                || name.ends_with(".bmp")
+                || name.ends_with(".webp");
+            if is_media {
+                let mut img_bytes = Vec::new();
+                if file.read_to_end(&mut img_bytes).is_ok() && !img_bytes.is_empty() {
+                    let ext = name.split('.').last().unwrap_or("png").to_lowercase();
+                    let mime = match ext.as_str() {
+                        "png" => "image/png",
+                        "jpg" | "jpeg" => "image/jpeg",
+                        "gif" => "image/gif",
+                        "bmp" => "image/bmp",
+                        "webp" => "image/webp",
+                        _ => "image/png",
+                    };
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(&img_bytes);
+                    let data_url = format!("data:{};base64,{}", mime, b64);
+                    let filename = name.split('/').last().unwrap_or(&name).to_string();
+                    media_store.insert(name.clone(), data_url.clone());
+                    media_store.insert(filename.clone(), data_url.clone());
+                    media_store.insert(format!("media/{}", filename), data_url.clone());
+                    media_store.insert(format!("../media/{}", filename), data_url.clone());
+                }
+            }
+        }
+    }
+
+    // 2. Parse relationship files
+    let doc_rels = {
+        let mut xml = String::new();
+        if let Ok(mut f) = archive.by_name("word/_rels/document.xml.rels") {
+            let _ = f.read_to_string(&mut xml);
+        }
+        parse_relationships(&xml)
+    };
+
+    let doc_img_rels: HashMap<String, String> = doc_rels
+        .iter()
+        .filter_map(|(id, target)| {
+            let direct = media_store.get(target);
+            let fallback = media_store.get(target.split('/').last().unwrap_or(target));
+            direct.or(fallback).map(|url| (id.clone(), url.clone()))
+        })
+        .collect();
+
+    // 3. Extract Header and Footer images if present
+    let header_img_url = {
+        let mut h_rels_xml = String::new();
+        if let Ok(mut f) = archive.by_name("word/_rels/header1.xml.rels") {
+            let _ = f.read_to_string(&mut h_rels_xml);
+        }
+        let h_rels = parse_relationships(&h_rels_xml);
+        let mut h_xml = String::new();
+        if let Ok(mut f) = archive.by_name("word/header1.xml") {
+            let _ = f.read_to_string(&mut h_xml);
+        }
+        extract_image_rid_from_part_xml(&h_xml).and_then(|rid| {
+            h_rels.get(&rid).and_then(|tgt| {
+                let direct = media_store.get(tgt);
+                let fallback = media_store.get(tgt.split('/').last().unwrap_or(tgt));
+                direct.or(fallback).cloned()
+            })
+        })
+    };
+
+    let footer_img_url = {
+        let mut f_rels_xml = String::new();
+        if let Ok(mut f) = archive.by_name("word/_rels/footer1.xml.rels") {
+            let _ = f.read_to_string(&mut f_rels_xml);
+        }
+        let f_rels = parse_relationships(&f_rels_xml);
+        let mut f_xml = String::new();
+        if let Ok(mut f) = archive.by_name("word/footer1.xml") {
+            let _ = f.read_to_string(&mut f_xml);
+        }
+        extract_image_rid_from_part_xml(&f_xml).and_then(|rid| {
+            f_rels.get(&rid).and_then(|tgt| {
+                let direct = media_store.get(tgt);
+                let fallback = media_store.get(tgt.split('/').last().unwrap_or(tgt));
+                direct.or(fallback).cloned()
+            })
+        })
+    };
 
     let numbering_info = {
         let mut num_xml = String::new();
@@ -552,6 +719,8 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
 
     // Table state
     let mut in_tbl = false;
+    let mut current_tbl_indent: u32 = 0;
+    let mut current_tbl_has_borders = false;
     let mut current_table_rows: Vec<Vec<Vec<String>>> = Vec::new();
     let mut current_row: Vec<Vec<String>> = Vec::new();
     let mut current_cell_paragraphs: Vec<String> = Vec::new();
@@ -566,6 +735,8 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
                     b"w:tbl" => {
                         in_tbl = true;
                         current_table_rows.clear();
+                        current_tbl_indent = 0;
+                        current_tbl_has_borders = false;
                     }
                     b"w:tr" => {
                         current_row.clear();
@@ -580,6 +751,63 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
                         current_p_num_id = None;
                         current_p_ilvl = 0;
                         current_p_tokens.clear();
+                    }
+                    b"w:tblInd" => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:w" {
+                                if let Ok(val) = std::str::from_utf8(&attr.value) {
+                                    current_tbl_indent = val.parse::<u32>().unwrap_or(0);
+                                }
+                            }
+                        }
+                    }
+                    b"w:top" | b"w:left" | b"w:bottom" | b"w:right" | b"w:insideH" | b"w:insideV" => {
+                        if in_tbl {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.as_ref() == b"w:val" {
+                                    if let Ok(val) = std::str::from_utf8(&attr.value) {
+                                        let v_lower = val.to_lowercase();
+                                        if v_lower != "none" && v_lower != "nil" && v_lower != "0" && !v_lower.is_empty() {
+                                            current_tbl_has_borders = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if in_p_pr && name.as_ref() == b"w:left" {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.as_ref() == b"w:color" {
+                                    if let Ok(val) = std::str::from_utf8(&attr.value) {
+                                        let col_lower = val.to_lowercase();
+                                        if col_lower.starts_with("16a") || col_lower.starts_with("22c") {
+                                            current_p_is_callout = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    b"a:blip" => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"r:embed" {
+                                if let Ok(rid) = std::str::from_utf8(&attr.value) {
+                                    if let Some(url) = doc_img_rels.get(rid) {
+                                        blocks.push(ImportedBlock::Image(url.clone()));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    b"v:imagedata" => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"r:id" {
+                                if let Ok(rid) = std::str::from_utf8(&attr.value) {
+                                    if let Some(url) = doc_img_rels.get(rid) {
+                                        blocks.push(ImportedBlock::Image(url.clone()));
+                                    }
+                                }
+                            }
+                        }
                     }
                     b"w:numId" => {
                         for attr in e.attributes().flatten() {
@@ -626,6 +854,63 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
                             if attr.key.as_ref() == b"w:val" {
                                 if let Ok(val) = std::str::from_utf8(&attr.value) {
                                     current_p_style = Some(val.to_string());
+                                }
+                            }
+                        }
+                    }
+                    b"w:tblInd" => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:w" {
+                                if let Ok(val) = std::str::from_utf8(&attr.value) {
+                                    current_tbl_indent = val.parse::<u32>().unwrap_or(0);
+                                }
+                            }
+                        }
+                    }
+                    b"w:top" | b"w:left" | b"w:bottom" | b"w:right" | b"w:insideH" | b"w:insideV" => {
+                        if in_tbl {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.as_ref() == b"w:val" {
+                                    if let Ok(val) = std::str::from_utf8(&attr.value) {
+                                        let v_lower = val.to_lowercase();
+                                        if v_lower != "none" && v_lower != "nil" && v_lower != "0" && !v_lower.is_empty() {
+                                            current_tbl_has_borders = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if in_p_pr && name.as_ref() == b"w:left" {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.as_ref() == b"w:color" {
+                                    if let Ok(val) = std::str::from_utf8(&attr.value) {
+                                        let col_lower = val.to_lowercase();
+                                        if col_lower.starts_with("16a") || col_lower.starts_with("22c") {
+                                            current_p_is_callout = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    b"a:blip" => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"r:embed" {
+                                if let Ok(rid) = std::str::from_utf8(&attr.value) {
+                                    if let Some(url) = doc_img_rels.get(rid) {
+                                        blocks.push(ImportedBlock::Image(url.clone()));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    b"v:imagedata" => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"r:id" {
+                                if let Ok(rid) = std::str::from_utf8(&attr.value) {
+                                    if let Some(url) = doc_img_rels.get(rid) {
+                                        blocks.push(ImportedBlock::Image(url.clone()));
+                                    }
                                 }
                             }
                         }
@@ -751,20 +1036,6 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
                                     }
                                     if in_p_pr && (fill_lower.starts_with("f0fd") || fill_lower.starts_with("dcfc")) {
                                         current_p_is_callout = true;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    b"w:left" => {
-                        if in_p_pr {
-                            for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"w:color" {
-                                    if let Ok(val) = std::str::from_utf8(&attr.value) {
-                                        let col_lower = val.to_lowercase();
-                                        if col_lower.starts_with("16a") || col_lower.starts_with("22c") {
-                                            current_p_is_callout = true;
-                                        }
                                     }
                                 }
                             }
@@ -912,7 +1183,12 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
                             };
 
                             if in_tbl {
-                                current_cell_paragraphs.push(formatted_line);
+                                let p_tag = if let Some(ref a) = align {
+                                    format!("<p align=\"{}\">{}</p>", a, formatted_line)
+                                } else {
+                                    format!("<p>{}</p>", formatted_line)
+                                };
+                                current_cell_paragraphs.push(p_tag);
                             } else if current_p_is_callout || style_lower.contains("callout") {
                                 blocks.push(ImportedBlock::Callout(formatted_line));
                             } else if style_lower.contains("heading 1") || style_lower == "1" || style_lower == "heading1" {
@@ -961,9 +1237,9 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
                     }
                     b"w:tbl" => {
                         in_tbl = false;
+                        let is_borderless = !current_tbl_has_borders;
+                        let is_align_right = current_tbl_indent >= 4000;
 
-                        // Check if this table is actually a multi-column card grid:
-                        // 1 row, 2-3 non-empty cells
                         let is_single_row = current_table_rows.len() == 1;
                         let non_empty_cells: Vec<Vec<String>> = if is_single_row {
                             current_table_rows[0]
@@ -975,10 +1251,14 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
                             Vec::new()
                         };
 
-                        if is_single_row && non_empty_cells.len() >= 2 && non_empty_cells.len() <= 3 {
+                        if is_single_row && !is_borderless && non_empty_cells.len() >= 2 && non_empty_cells.len() <= 3 {
                             blocks.push(ImportedBlock::Grid(non_empty_cells));
                         } else if !current_table_rows.is_empty() {
-                            blocks.push(ImportedBlock::Table(current_table_rows.clone()));
+                            blocks.push(ImportedBlock::Table {
+                                rows: current_table_rows.clone(),
+                                is_borderless,
+                                is_align_right,
+                            });
                         }
                     }
                     _ => {}
@@ -1035,25 +1315,49 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
                 for col_ps in cols {
                     grid_xml.push_str("        <div class=\"col-box\">\n");
                     for p in col_ps {
-                        grid_xml.push_str(&format!("          <p>{}</p>\n", p));
+                        grid_xml.push_str(&format!("          {}\n", p));
                     }
                     grid_xml.push_str("        </div>\n");
                 }
                 grid_xml.push_str("      </grid>");
                 body_nodes.push(grid_xml);
             }
-            ImportedBlock::Table(rows) => {
-                let mut tbl_xml = String::from("      <table>\n");
+            ImportedBlock::Image(url) => {
+                body_nodes.push(format!(
+                    "      <div align=\"center\" style=\"margin: 4mm 0;\"><img src=\"{}\" style=\"max-width: 100%; height: auto;\" /></div>",
+                    url
+                ));
+            }
+            ImportedBlock::Table { rows, is_borderless, is_align_right } => {
+                let mut classes = Vec::new();
+                if is_borderless {
+                    classes.push("borderless");
+                }
+                if is_align_right {
+                    classes.push("align-right");
+                }
+                let class_attr = if !classes.is_empty() {
+                    format!(" class=\"{}\"", classes.join(" "))
+                } else {
+                    String::new()
+                };
+                let style_attr = if is_align_right {
+                    " style=\"margin-left: auto; width: 45%;\""
+                } else {
+                    ""
+                };
+                let mut tbl_xml = format!("      <table{}{}>\n", class_attr, style_attr);
                 for (row_idx, row) in rows.iter().enumerate() {
                     tbl_xml.push_str("        <tr>\n");
                     for cell_ps in row {
-                        let tag = if row_idx == 0 { "th" } else { "td" };
+                        let tag = if row_idx == 0 && !is_borderless { "th" } else { "td" };
+                        let td_style = if is_borderless { " style=\"border: none;\"" } else { "" };
                         let content = if cell_ps.is_empty() {
                             String::new()
                         } else {
-                            cell_ps.join("<br/>")
+                            cell_ps.join("\n          ")
                         };
-                        tbl_xml.push_str(&format!("          <{}>{}</{}>\n", tag, content.trim(), tag));
+                        tbl_xml.push_str(&format!("          <{}{}>\n            {}\n          </{}>\n", tag, td_style, content.trim(), tag));
                     }
                     tbl_xml.push_str("        </tr>\n");
                 }
@@ -1062,6 +1366,33 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
             }
         }
     }
+
+    let header_xml = if let Some(ref img_url) = header_img_url {
+        format!(
+            r#"        <running-header>
+          <center><img src="{}" style="max-height: 25mm;" /></center>
+        </running-header>"#,
+            img_url
+        )
+    } else {
+        r#"        <running-header>
+          <left><text>Imported Document</text></left>
+          <right><page-number/> of <total-pages/></right>
+        </running-header>"#.to_string()
+    };
+
+    let footer_xml = if let Some(ref img_url) = footer_img_url {
+        format!(
+            r#"        <running-footer>
+          <center><img src="{}" style="max-width: 100%;" /></center>
+        </running-footer>"#,
+            img_url
+        )
+    } else {
+        r#"        <running-footer>
+          <center><text>Pagina Engine</text></center>
+        </running-footer>"#.to_string()
+    };
 
     let dxml = format!(
         r#"<doc>
@@ -1074,13 +1405,8 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
     <link rel="stylesheet" href="styles.dcss" />
     <page-styles>
       <page-style name="body" default="true">
-        <running-header>
-          <left><text>Imported Document</text></left>
-          <right><page-number/> of <total-pages/></right>
-        </running-header>
-        <running-footer>
-          <center><text>Pagina Engine</text></center>
-        </running-footer>
+{}
+{}
       </page-style>
     </page-styles>
   </props>
@@ -1094,6 +1420,8 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
         paper_size,
         paper_orientation,
         paper_margin_mm,
+        header_xml,
+        footer_xml,
         if body_nodes.is_empty() {
             "      <p>Empty document</p>".to_string()
         } else {
@@ -1205,6 +1533,17 @@ th, td {{
 th {{
   background-color: #f8fafc;
   font-weight: bold;
+}}
+
+table.borderless, table.borderless th, table.borderless td {{
+  border: none !important;
+  background: transparent !important;
+}}
+
+table.align-right {{
+  margin-left: auto !important;
+  margin-right: 0 !important;
+  width: 45% !important;
 }}
 
 p[align="center"], h1[align="center"], h2[align="center"] {{

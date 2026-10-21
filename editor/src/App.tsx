@@ -18,6 +18,7 @@ import {
   CheckCircle2,
   AlertTriangle,
   Printer,
+  Image as ImageIcon,
 } from 'lucide-react';
 import { parseDdlClient } from './parserClient';
 import { DocumentRenderer } from './DocumentRenderer';
@@ -41,6 +42,7 @@ export function App() {
   const editorRef = useRef<any>(null);
   const previewContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<any>(null);
 
   // Multi-file state
@@ -237,6 +239,41 @@ export function App() {
     compileProject(nextFiles);
   };
 
+  // Insert image at cursor into Monaco editor
+  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const dataUrl = event.target?.result as string;
+      if (!dataUrl) return;
+
+      const altName = file.name.replace(/\.[^/.]+$/, '');
+      const snippet = `\n<div align="center" style="margin: 4mm 0;">\n  <img src="${dataUrl}" alt="${altName}" style="max-width: 100%; height: auto;" />\n</div>\n`;
+
+      if (editorRef.current) {
+        const selection = editorRef.current.getSelection();
+        editorRef.current.executeEdits('insert-image', [
+          {
+            range: selection,
+            text: snippet,
+            forceMoveMarkers: true,
+          },
+        ]);
+        editorRef.current.focus();
+      } else {
+        const nextFiles = files.map(f =>
+          f.id === activeFileId ? { ...f, content: f.content + snippet } : f
+        );
+        setFiles(nextFiles);
+        compileProject(nextFiles);
+      }
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
   // Export Document via Native Rust Engine (Tauri IPC or Axum Server)
   const handleExport = async (format: 'pdf' | 'docx') => {
     const mainDocFile = files.find(f => f.name.endsWith('.dxml') || f.name.endsWith('.xml')) || files[0];
@@ -405,6 +442,34 @@ export function App() {
               >
                 <Wand2 size={13} /> Format
               </button>
+
+              {/* Insert Image Button */}
+              <button
+                onClick={() => imageInputRef.current?.click()}
+                title="Insert Image (Embeds Base64 PNG/JPG/SVG directly)"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  background: '#1e293b',
+                  color: '#38bdf8',
+                  border: '1px solid #0284c7',
+                  padding: '6px 12px',
+                  borderRadius: '6px',
+                  fontSize: '12px',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                <ImageIcon size={13} /> Insert Image
+              </button>
+              <input
+                type="file"
+                ref={imageInputRef}
+                accept="image/*"
+                onChange={handleImageSelect}
+                style={{ display: 'none' }}
+              />
 
               {/* Import / Reverse Engineer Button */}
               <button

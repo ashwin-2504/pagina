@@ -157,7 +157,9 @@ mod tests {
         assert!(result.dxml.contains("U.G. PROJECT REGISTRATION FORM"));
         assert!(result.dxml.contains("Gopale Ashwin Ashok"));
         assert!(result.dxml.contains("EVA: Environmental Vision through Audio"));
-        assert!(result.dxml.contains("<table>"));
+        assert!(result.dxml.contains("<table"));
+        assert!(result.dxml.contains("borderless"));
+        assert!(result.dxml.contains("<img"));
         assert!(result.dxml.contains("Dr. S. K. Korde"));
         assert!(result.dcss.contains("table {"));
         let ul_count = result.dxml.matches("<ul").count();
@@ -473,5 +475,53 @@ mod tests {
         // Verify nesting in DXML output
         assert!(imported.dxml.contains("<ul"));
         assert!(imported.dxml.contains("type=\"circle\"") || imported.dxml.contains("<ul"));
+    }
+
+    #[test]
+    fn test_image_export_pdf_and_docx() {
+        let input = r#"<doc>
+  <props>
+    <page-styles>
+      <page-style name="body" default="true">
+        <running-header>
+          <center><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==" style="max-height: 20mm;" /></center>
+        </running-header>
+      </page-style>
+    </page-styles>
+  </props>
+  <body>
+    <section>
+      <h1>Document With Image</h1>
+      <div align="center">
+        <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==" width="50mm" />
+      </div>
+      <table class="borderless align-right">
+        <tr>
+          <td><p align="center">Dr. S. K. Korde</p></td>
+        </tr>
+      </table>
+    </section>
+  </body>
+</doc>"#;
+        let mut parser = parser::Parser::new(input);
+        let doc = parser.parse().expect("DXML must parse");
+        let pdf_bytes = pdf::export_pdf(&doc).expect("PDF export with image must succeed");
+        assert!(!pdf_bytes.is_empty());
+        assert_eq!(&pdf_bytes[0..4], b"%PDF");
+
+        let docx_bytes = docx::export_docx(&doc).expect("DOCX export with image must succeed");
+        assert!(!docx_bytes.is_empty());
+        assert_eq!(&docx_bytes[0..2], b"PK");
+
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(docx_bytes)).expect("Must be valid zip");
+        let mut has_media = false;
+        for i in 0..archive.len() {
+            let file = archive.by_index(i).unwrap();
+            if file.name().starts_with("word/media/") {
+                has_media = true;
+                break;
+            }
+        }
+        assert!(has_media, "Re-exported DOCX must contain embedded media");
     }
 }

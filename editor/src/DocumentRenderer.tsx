@@ -14,6 +14,18 @@ interface DocumentRendererProps {
   error: ErrorInfo | null;
 }
 
+function hasImageNode(nodes?: DocNode[]): boolean {
+  if (!nodes) return false;
+  return nodes.some(n => {
+    if (n.type === 'Element') {
+      const el = n as ElementNode;
+      if (el.tag.toLowerCase() === 'img') return true;
+      return hasImageNode(el.children);
+    }
+    return false;
+  });
+}
+
 export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error }) => {
   if (error) {
     return (
@@ -188,23 +200,28 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error }
               )}
 
               {/* Running Header */}
-              {pageStyle?.running_header && (
-                <div style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  borderBottom: '1px solid #e2e8f0',
-                  paddingBottom: '3mm',
-                  marginBottom: '8mm',
-                  fontSize: '9pt',
-                  color: '#64748b',
-                  userSelect: 'none',
-                }}>
-                  <div style={{ flex: 1, textAlign: 'left' }}><RenderChildren nodes={pageStyle.running_header.left} /></div>
-                  <div style={{ flex: 1, textAlign: 'center' }}><RenderChildren nodes={pageStyle.running_header.center} /></div>
-                  <div style={{ flex: 1, textAlign: 'right' }}><RenderChildren nodes={pageStyle.running_header.right} /></div>
-                </div>
-              )}
+              {pageStyle?.running_header && (() => {
+                const hasImg = hasImageNode(pageStyle.running_header.center) ||
+                               hasImageNode(pageStyle.running_header.left) ||
+                               hasImageNode(pageStyle.running_header.right);
+                return (
+                  <div style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    borderBottom: hasImg ? 'none' : '1px solid #e2e8f0',
+                    paddingBottom: hasImg ? '0' : '3mm',
+                    marginBottom: hasImg ? '4mm' : '8mm',
+                    fontSize: '9pt',
+                    color: '#64748b',
+                    userSelect: 'none',
+                  }}>
+                    <div style={{ flex: 1, textAlign: 'left' }}><RenderChildren nodes={pageStyle.running_header.left} /></div>
+                    <div style={{ flex: 1, textAlign: 'center' }}><RenderChildren nodes={pageStyle.running_header.center} /></div>
+                    <div style={{ flex: 1, textAlign: 'right' }}><RenderChildren nodes={pageStyle.running_header.right} /></div>
+                  </div>
+                );
+              })()}
 
               {/* Page Content Body */}
               <div style={{ position: 'relative', zIndex: 1, flex: 1, display: 'flex', flexDirection: 'column' }}>
@@ -212,23 +229,28 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error }
               </div>
 
               {/* Running Footer */}
-              {pageStyle?.running_footer && (
-                <div style={{
-                  marginTop: 'auto',
-                  borderTop: '1px solid #e2e8f0',
-                  paddingTop: '3mm',
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  fontSize: '9pt',
-                  color: '#94a3b8',
-                  userSelect: 'none',
-                }}>
-                  <div style={{ flex: 1, textAlign: 'left' }}><RenderChildren nodes={pageStyle.running_footer.left} /></div>
-                  <div style={{ flex: 1, textAlign: 'center' }}><RenderChildren nodes={pageStyle.running_footer.center} /></div>
-                  <div style={{ flex: 1, textAlign: 'right' }}><RenderChildren nodes={pageStyle.running_footer.right} /></div>
-                </div>
-              )}
+              {pageStyle?.running_footer && (() => {
+                const hasImg = hasImageNode(pageStyle.running_footer.center) ||
+                               hasImageNode(pageStyle.running_footer.left) ||
+                               hasImageNode(pageStyle.running_footer.right);
+                return (
+                  <div style={{
+                    marginTop: 'auto',
+                    borderTop: hasImg ? 'none' : '1px solid #e2e8f0',
+                    paddingTop: hasImg ? '0' : '3mm',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    fontSize: '9pt',
+                    color: '#94a3b8',
+                    userSelect: 'none',
+                  }}>
+                    <div style={{ flex: 1, textAlign: 'left' }}><RenderChildren nodes={pageStyle.running_footer.left} /></div>
+                    <div style={{ flex: 1, textAlign: 'center' }}><RenderChildren nodes={pageStyle.running_footer.center} /></div>
+                    <div style={{ flex: 1, textAlign: 'right' }}><RenderChildren nodes={pageStyle.running_footer.right} /></div>
+                  </div>
+                );
+              })()}
             </div>
           );
         })}
@@ -371,13 +393,18 @@ const RenderElement: React.FC<{ el: ElementNode }> = ({ el }) => {
 
   // Default table styling
   if (tagLower === 'table') {
+    const isBorderless = classes?.includes('borderless') || styleObj.border === 'none';
+    const isAlignRight = classes?.includes('align-right') || attributes['align'] === 'right';
     return (
       <table
         className={className}
         style={{
-          width: '100%',
+          width: isAlignRight ? '48%' : '100%',
+          marginLeft: isAlignRight ? 'auto' : undefined,
+          marginRight: isAlignRight ? '0' : undefined,
           borderCollapse: 'collapse',
           margin: '4mm 0',
+          border: isBorderless ? 'none' : undefined,
           ...styleObj,
         }}
         {...attributes}
@@ -388,14 +415,15 @@ const RenderElement: React.FC<{ el: ElementNode }> = ({ el }) => {
   }
 
   if (tagLower === 'th') {
+    const isBorderless = classes?.includes('borderless') || styleObj.border === 'none';
     return (
       <th
         className={className}
         style={{
-          border: '1px solid #cbd5e1',
+          border: isBorderless ? 'none' : '1px solid #cbd5e1',
           padding: '2mm 3mm',
           textAlign: 'left',
-          backgroundColor: '#f8fafc',
+          backgroundColor: isBorderless ? 'transparent' : '#f8fafc',
           fontWeight: 'bold',
           ...styleObj,
         }}
@@ -407,13 +435,15 @@ const RenderElement: React.FC<{ el: ElementNode }> = ({ el }) => {
   }
 
   if (tagLower === 'td') {
+    const isBorderless = classes?.includes('borderless') || styleObj.border === 'none';
     return (
       <td
         className={className}
         style={{
-          border: '1px solid #cbd5e1',
+          border: isBorderless ? 'none' : '1px solid #cbd5e1',
           padding: '2mm 3mm',
           textAlign: 'left',
+          backgroundColor: isBorderless ? 'transparent' : undefined,
           ...styleObj,
         }}
         {...attributes}

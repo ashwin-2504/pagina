@@ -1,4 +1,5 @@
 use crate::ast::{Document, ElementNode, Node, PageStyle};
+use base64::Engine;
 use printpdf::path::{PaintMode, WindingOrder};
 use printpdf::*;
 use std::io::Cursor;
@@ -186,6 +187,69 @@ fn extract_nodes_text(nodes: &[Node]) -> String {
     s.trim().to_string()
 }
 
+fn find_img_in_nodes<'a>(nodes: &'a [Node]) -> Option<&'a ElementNode> {
+    for n in nodes {
+        match n {
+            Node::Element(el) => {
+                if el.tag.to_lowercase() == "img" {
+                    return Some(el);
+                }
+                if let Some(sub) = find_img_in_nodes(&el.children) {
+                    return Some(sub);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn load_image_bytes(src: &str) -> Option<Vec<u8>> {
+    if src.starts_with("data:image/") {
+        if let Some(pos) = src.find(',') {
+            let b64 = &src[pos + 1..];
+            base64::engine::general_purpose::STANDARD.decode(b64.trim()).ok()
+        } else {
+            None
+        }
+    } else {
+        std::fs::read(src).ok()
+    }
+}
+
+fn draw_image_on_layer(
+    layer: &PdfLayerReference,
+    dynamic_img: &::image::DynamicImage,
+    x_mm: f32,
+    y_bottom_mm: f32,
+    target_w_mm: f32,
+    target_h_mm: f32,
+) {
+    let px_w = dynamic_img.width() as f32;
+    let px_h = dynamic_img.height() as f32;
+    if px_w <= 0.0 || px_h <= 0.0 {
+        return;
+    }
+
+    let printpdf_img = Image::from_dynamic_image(dynamic_img);
+
+    let native_w_mm = px_w * 25.4 / 300.0;
+    let native_h_mm = px_h * 25.4 / 300.0;
+    let scale_x = target_w_mm / native_w_mm;
+    let scale_y = target_h_mm / native_h_mm;
+
+    let transform = ImageTransform {
+        translate_x: Some(Mm(x_mm)),
+        translate_y: Some(Mm(y_bottom_mm)),
+        rotate: None,
+        scale_x: Some(scale_x),
+        scale_y: Some(scale_y),
+        dpi: Some(300.0),
+    };
+
+    printpdf_img.add_to_layer(layer.clone(), transform);
+}
+
 fn draw_running_header_footer(
     layer: &PdfLayerReference,
     page_num: usize,
@@ -197,65 +261,132 @@ fn draw_running_header_footer(
     doc: &Document,
 ) {
     let ps = get_active_page_style(doc);
-    let left_text = ps
+
+    // 1. Check if running header contains an image
+    let header_img_opt = ps
         .and_then(|p| p.running_header.as_ref())
-        .map(|h| extract_nodes_text(&h.left))
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| {
-            doc.props
-                .metadata
-                .get("title")
-                .cloned()
-                .unwrap_or_else(|| "Technical Report".to_string())
+        .and_then(|h| {
+            find_img_in_nodes(&h.center)
+                .or_else(|| find_img_in_nodes(&h.left))
+                .or_else(|| find_img_in_nodes(&h.right))
         });
 
-    let right_text = format!("{} of 1", page_num);
+    let mut drew_header_image = false;
+    if let Some(img_el) = header_img_opt {
+        if let Some(src) = img_el.attributes.get("src") {
+            if let Some(bytes) = load_image_bytes(src) {
+                if let Ok(dyn_img) = ::image::load_from_memory(&bytes) {
+                    let px_w = dyn_img.width() as f32;
+                    let px_h = dyn_img.height() as f32;
+                    let aspect = px_h / px_w;
+                    let target_w = content_width.min(170.0);
+                    let target_h = (target_w * aspect).min(25.0);
+                    let img_x = left_margin + (content_width - target_w) / 2.0;
+                    let img_y = height_mm - target_h - 4.0;
+                    draw_image_on_layer(layer, &dyn_img, img_x, img_y, target_w, target_h);
+                    drew_header_image = true;
+                }
+            }
+        }
+    }
 
-    let footer_text = ps
+    if !drew_header_image {
+        let left_text = ps
+            .and_then(|p| p.running_header.as_ref())
+            .map(|h| extract_nodes_text(&h.left))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| {
+                doc.props
+                    .metadata
+                    .get("title")
+                    .cloned()
+                    .unwrap_or_else(|| "Technical Report".to_string())
+            });
+
+        let right_text = format!("{} of 1", page_num);
+
+        // Color: #64748B (Slate Gray)
+        layer.set_fill_color(Color::Rgb(Rgb::new(
+            100.0 / 255.0,
+            116.0 / 255.0,
+            139.0 / 255.0,
+            None,
+        )));
+
+        // Running Header text
+        let header_y = height_mm - 11.5;
+        layer.use_text(&left_text, 8.5, Mm(left_margin), Mm(header_y), font_reg);
+
+        let right_w = (right_text.len() as f32) * 8.5 * 0.19;
+        let right_x = (left_margin + content_width - right_w).max(left_margin);
+        layer.use_text(&right_text, 8.5, Mm(right_x), Mm(header_y), font_reg);
+
+        // Running Header thin rule line (#CBD5E1)
+        let rule_y = height_mm - 14.0;
+        layer.set_outline_color(Color::Rgb(Rgb::new(
+            203.0 / 255.0,
+            213.0 / 255.0,
+            225.0 / 255.0,
+            None,
+        )));
+        layer.set_outline_thickness(0.5);
+        let points = vec![
+            (Point::new(Mm(left_margin), Mm(rule_y)), false),
+            (Point::new(Mm(left_margin + content_width), Mm(rule_y)), false),
+        ];
+        layer.add_line(Line {
+            points,
+            is_closed: false,
+        });
+    }
+
+    // 2. Check if running footer contains an image
+    let footer_img_opt = ps
         .and_then(|p| p.running_footer.as_ref())
-        .map(|f| extract_nodes_text(&f.center))
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "Pagina Document Typesetting System".to_string());
+        .and_then(|f| {
+            find_img_in_nodes(&f.center)
+                .or_else(|| find_img_in_nodes(&f.left))
+                .or_else(|| find_img_in_nodes(&f.right))
+        });
 
-    // Color: #64748B (Slate Gray)
-    layer.set_fill_color(Color::Rgb(Rgb::new(
-        100.0 / 255.0,
-        116.0 / 255.0,
-        139.0 / 255.0,
-        None,
-    )));
+    let mut drew_footer_image = false;
+    if let Some(img_el) = footer_img_opt {
+        if let Some(src) = img_el.attributes.get("src") {
+            if let Some(bytes) = load_image_bytes(src) {
+                if let Ok(dyn_img) = ::image::load_from_memory(&bytes) {
+                    let px_w = dyn_img.width() as f32;
+                    let px_h = dyn_img.height() as f32;
+                    let aspect = px_h / px_w;
+                    let target_w = content_width.min(180.0);
+                    let target_h = (target_w * aspect).min(24.0);
+                    let img_x = left_margin + (content_width - target_w) / 2.0;
+                    let img_y = 5.0;
+                    draw_image_on_layer(layer, &dyn_img, img_x, img_y, target_w, target_h);
+                    drew_footer_image = true;
+                }
+            }
+        }
+    }
 
-    // Running Header text
-    let header_y = height_mm - 11.5;
-    layer.use_text(&left_text, 8.5, Mm(left_margin), Mm(header_y), font_reg);
+    if !drew_footer_image {
+        let footer_text = ps
+            .and_then(|p| p.running_footer.as_ref())
+            .map(|f| extract_nodes_text(&f.center))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "Pagina Document Typesetting System".to_string());
 
-    let right_w = (right_text.len() as f32) * 8.5 * 0.19;
-    let right_x = (left_margin + content_width - right_w).max(left_margin);
-    layer.use_text(&right_text, 8.5, Mm(right_x), Mm(header_y), font_reg);
+        layer.set_fill_color(Color::Rgb(Rgb::new(
+            100.0 / 255.0,
+            116.0 / 255.0,
+            139.0 / 255.0,
+            None,
+        )));
 
-    // Running Header thin rule line (#CBD5E1)
-    let rule_y = height_mm - 14.0;
-    layer.set_outline_color(Color::Rgb(Rgb::new(
-        203.0 / 255.0,
-        213.0 / 255.0,
-        225.0 / 255.0,
-        None,
-    )));
-    layer.set_outline_thickness(0.5);
-    let points = vec![
-        (Point::new(Mm(left_margin), Mm(rule_y)), false),
-        (Point::new(Mm(left_margin + content_width), Mm(rule_y)), false),
-    ];
-    layer.add_line(Line {
-        points,
-        is_closed: false,
-    });
-
-    // Running Footer centered at bottom
-    let footer_y = 10.5;
-    let footer_w = (footer_text.len() as f32) * 8.5 * 0.19;
-    let footer_x = (left_margin + (content_width - footer_w) / 2.0).max(left_margin);
-    layer.use_text(&footer_text, 8.5, Mm(footer_x), Mm(footer_y), font_reg);
+        let footer_y = 10.5;
+        let footer_w = (footer_text.len() as f32) * 8.5 * 0.19;
+        let footer_x = (left_margin + (content_width - footer_w) / 2.0).max(left_margin);
+        layer.use_text(&footer_text, 8.5, Mm(footer_x), Mm(footer_y), font_reg);
+    }
 
     // Reset fill color to Dark Slate #0f172a
     layer.set_fill_color(Color::Rgb(Rgb::new(
@@ -862,6 +993,24 @@ fn render_doc_nodes(
                             }
                         }
                         *cursor_y -= 2.0;
+                    }
+                    "img" => {
+                        render_image(
+                            el,
+                            pdf_doc,
+                            current_page,
+                            current_layer,
+                            page_count,
+                            cursor_y,
+                            left_margin,
+                            content_width,
+                            height_mm,
+                            top_margin,
+                            bottom_margin,
+                            width_mm,
+                            fonts,
+                            doc,
+                        );
                     }
                     "table" => {
                         render_table(
@@ -1644,6 +1793,21 @@ fn render_table(
         return;
     }
 
+    let is_borderless = el.classes.iter().any(|c| c == "borderless")
+        || el.attributes.get("class").map(|c| c.contains("borderless")).unwrap_or(false)
+        || el.inline_styles.get("border").map(|b| b.contains("none")).unwrap_or(false);
+
+    let is_align_right = el.classes.iter().any(|c| c == "align-right")
+        || el.attributes.get("class").map(|c| c.contains("align-right")).unwrap_or(false)
+        || el.attributes.get("align").map(|a| a == "right").unwrap_or(false)
+        || el.inline_styles.get("margin-left").map(|m| m.contains("auto")).unwrap_or(false);
+
+    let (table_left, table_width) = if is_align_right {
+        (left_margin + content_width * 0.52, content_width * 0.48)
+    } else {
+        (left_margin, content_width)
+    };
+
     let mut max_cols = 1;
     for r in &rows {
         let cell_count = r
@@ -1663,7 +1827,7 @@ fn render_table(
         }
     }
 
-    let col_width = content_width / (max_cols as f32);
+    let col_width = table_width / (max_cols as f32);
     *cursor_y -= 3.0;
 
     for row in rows {
@@ -1688,13 +1852,41 @@ fn render_table(
             continue;
         }
 
-        let is_header_row = cells.iter().any(|c| c.tag.to_lowercase() == "th");
+        let is_header_row = !is_borderless && cells.iter().any(|c| c.tag.to_lowercase() == "th");
         let font = if is_header_row {
             fonts.helvetica_bold
         } else {
             fonts.helvetica_reg
         };
-        let row_height_mm = 8.5f32;
+
+        // Extract lines for each cell to properly calculate row height
+        let mut row_cell_lines: Vec<Vec<String>> = Vec::new();
+        let mut max_lines = 1;
+        for cell in &cells {
+            let mut l = Vec::new();
+            for c in &cell.children {
+                if let Node::Element(p) = c {
+                    let txt = extract_plain_text(p);
+                    if !txt.trim().is_empty() {
+                        l.push(txt.trim().to_string());
+                    }
+                }
+            }
+            if l.is_empty() {
+                let full = extract_plain_text(cell);
+                for part in full.split('\n') {
+                    if !part.trim().is_empty() {
+                        l.push(part.trim().to_string());
+                    }
+                }
+            }
+            if l.len() > max_lines {
+                max_lines = l.len();
+            }
+            row_cell_lines.push(l);
+        }
+
+        let row_height_mm = (max_lines as f32 * 4.6).max(7.5);
 
         if *cursor_y - row_height_mm < bottom_margin {
             *page_count += 1;
@@ -1715,62 +1907,176 @@ fn render_table(
             *cursor_y = height_mm - top_margin;
         }
 
-        // Row background & bottom border
-        if is_header_row {
-            current_layer.set_fill_color(Color::Rgb(Rgb::new(
-                248.0 / 255.0,
-                250.0 / 255.0,
-                252.0 / 255.0,
+        // Draw header background & bottom border line only for standard bordered tables
+        if !is_borderless {
+            if is_header_row {
+                current_layer.set_fill_color(Color::Rgb(Rgb::new(
+                    248.0 / 255.0,
+                    250.0 / 255.0,
+                    252.0 / 255.0,
+                    None,
+                )));
+                let mut header_rect = Rect::new(
+                    Mm(table_left),
+                    Mm(*cursor_y - row_height_mm),
+                    Mm(table_left + table_width),
+                    Mm(*cursor_y),
+                );
+                header_rect.mode = PaintMode::Fill;
+                current_layer.add_rect(header_rect);
+            }
+
+            current_layer.set_outline_color(Color::Rgb(Rgb::new(
+                226.0 / 255.0,
+                232.0 / 255.0,
+                240.0 / 255.0,
                 None,
             )));
-            let mut header_rect = Rect::new(
-                Mm(left_margin),
-                Mm(*cursor_y - row_height_mm),
-                Mm(left_margin + content_width),
-                Mm(*cursor_y),
-            );
-            header_rect.mode = PaintMode::Fill;
-            current_layer.add_rect(header_rect);
+            current_layer.set_outline_thickness(0.5);
+            let border_line = Line {
+                points: vec![
+                    (Point::new(Mm(table_left), Mm(*cursor_y - row_height_mm)), false),
+                    (Point::new(Mm(table_left + table_width), Mm(*cursor_y - row_height_mm)), false),
+                ],
+                is_closed: false,
+            };
+            current_layer.add_line(border_line);
         }
 
-        current_layer.set_outline_color(Color::Rgb(Rgb::new(
-            226.0 / 255.0,
-            232.0 / 255.0,
-            240.0 / 255.0,
-            None,
-        )));
-        current_layer.set_outline_thickness(0.5);
-        let border_line = Line {
-            points: vec![
-                (Point::new(Mm(left_margin), Mm(*cursor_y - row_height_mm)), false),
-                (Point::new(Mm(left_margin + content_width), Mm(*cursor_y - row_height_mm)), false),
-            ],
-            is_closed: false,
-        };
-        current_layer.add_line(border_line);
-
         for (col_idx, cell) in cells.iter().enumerate() {
-            let cell_x = left_margin + (col_idx as f32) * col_width + 2.5;
-            let text = extract_plain_text(cell);
-            let max_chars = ((col_width - 5.0) * 2.2).max(10.0) as usize;
-            let display_text = if text.len() > max_chars {
-                format!("{}...", &text[..max_chars.saturating_sub(3)])
-            } else {
-                text
-            };
-            current_layer.set_fill_color(Color::Rgb(Rgb::new(
-                15.0 / 255.0,
-                23.0 / 255.0,
-                42.0 / 255.0,
-                None,
-            )));
-            current_layer.use_text(&display_text, 9.5, Mm(cell_x), Mm(*cursor_y - 5.5), font);
+            let lines = &row_cell_lines[col_idx];
+            let cell_align = cell.attributes.get("align")
+                .map(|s| s.as_str())
+                .or_else(|| {
+                    cell.children.iter().find_map(|c| {
+                        if let Node::Element(p) = c {
+                            p.attributes.get("align").map(|s| s.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                });
+
+            let font_size = 9.0;
+            let start_y = *cursor_y - 4.5;
+            let base_cell_x = table_left + (col_idx as f32) * col_width;
+
+            for (line_idx, line_txt) in lines.iter().enumerate() {
+                let y_pos = start_y - (line_idx as f32) * 4.2;
+                let text_w_mm = (line_txt.len() as f32) * font_size * 0.18;
+                let cell_x = match cell_align {
+                    Some("center") => base_cell_x + ((col_width - text_w_mm) / 2.0).max(1.5),
+                    Some("right") => base_cell_x + (col_width - text_w_mm - 2.0).max(1.5),
+                    _ => base_cell_x + 2.0,
+                };
+
+                current_layer.set_fill_color(Color::Rgb(Rgb::new(
+                    15.0 / 255.0,
+                    23.0 / 255.0,
+                    42.0 / 255.0,
+                    None,
+                )));
+                current_layer.use_text(line_txt, font_size, Mm(cell_x), Mm(y_pos), font);
+            }
         }
 
         *cursor_y -= row_height_mm;
     }
 
     *cursor_y -= 4.0;
+}
+
+fn render_image(
+    el: &ElementNode,
+    pdf_doc: &PdfDocumentReference,
+    current_page: &mut PdfPageIndex,
+    current_layer: &mut PdfLayerReference,
+    page_count: &mut usize,
+    cursor_y: &mut f32,
+    left_margin: f32,
+    content_width: f32,
+    height_mm: f32,
+    top_margin: f32,
+    bottom_margin: f32,
+    width_mm: f32,
+    fonts: &FontSet,
+    doc: &Document,
+) {
+    let src = match el.attributes.get("src") {
+        Some(s) if !s.is_empty() => s,
+        _ => return,
+    };
+
+    let bytes = match load_image_bytes(src) {
+        Some(b) => b,
+        None => return,
+    };
+
+    let dyn_img = match ::image::load_from_memory(&bytes) {
+        Ok(img) => img,
+        Err(_) => return,
+    };
+
+    let px_w = dyn_img.width() as f32;
+    let px_h = dyn_img.height() as f32;
+    if px_w <= 0.0 || px_h <= 0.0 {
+        return;
+    }
+
+    let aspect = px_h / px_w;
+    let mut target_w = content_width;
+    if let Some(w_str) = el.attributes.get("width").or_else(|| el.inline_styles.get("width")) {
+        if let Ok(w) = w_str.trim_end_matches("mm").trim_end_matches("px").parse::<f32>() {
+            if w > 0.0 {
+                target_w = w.min(content_width);
+            }
+        }
+    }
+    let mut target_h = target_w * aspect;
+    if let Some(h_str) = el.attributes.get("height").or_else(|| el.inline_styles.get("max-height")) {
+        if let Ok(h) = h_str.trim_end_matches("mm").trim_end_matches("px").parse::<f32>() {
+            if h > 0.0 && target_h > h {
+                target_h = h;
+                target_w = target_h / aspect;
+            }
+        }
+    }
+
+    let max_avail_h = height_mm - top_margin - bottom_margin;
+    if target_h > max_avail_h {
+        target_h = max_avail_h;
+        target_w = target_h / aspect;
+    }
+
+    if *cursor_y - target_h < bottom_margin {
+        *page_count += 1;
+        let (new_page, new_layer) = pdf_doc.add_page(Mm(width_mm), Mm(height_mm), "Content");
+        *current_page = new_page;
+        *current_layer = pdf_doc.get_page(new_page).get_layer(new_layer);
+        draw_running_header_footer(
+            current_layer,
+            *page_count,
+            left_margin,
+            content_width,
+            width_mm,
+            height_mm,
+            fonts.helvetica_reg,
+            doc,
+        );
+        *cursor_y = height_mm - top_margin;
+    }
+
+    let align = el.attributes.get("align").map(|s| s.as_str()).unwrap_or("center");
+    let img_x = match align {
+        "left" => left_margin,
+        "right" => left_margin + content_width - target_w,
+        _ => left_margin + (content_width - target_w) / 2.0,
+    };
+
+    let img_bottom_y = *cursor_y - target_h;
+    draw_image_on_layer(current_layer, &dyn_img, img_x, img_bottom_y, target_w, target_h);
+
+    *cursor_y = img_bottom_y - 4.0;
 }
 
 fn collect_rows<'a>(el: &'a ElementNode, rows: &mut Vec<&'a ElementNode>) {
