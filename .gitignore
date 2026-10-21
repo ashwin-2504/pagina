@@ -1,0 +1,23 @@
+# Target directories
+target/
+**/target/
+dist/
+**/dist/
+
+# Node dependencies
+node_modules/
+**/node_modules/
+.npm
+package-lock.json
+
+# Build outputs
+*.wasm
+editor/src/pkg/
+
+# System and IDE
+.DS_Store
+Thumbs.db
+*.swp
+*.log
+.vscode/
+.idea/
