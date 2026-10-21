@@ -4,11 +4,13 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "predev": "node scripts/free-ports.js",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
     "tauri": "tauri",
+    "pretauri:dev": "node scripts/free-ports.js",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"
   },
