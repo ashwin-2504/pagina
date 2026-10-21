@@ -38,16 +38,22 @@ export const DocumentationSite: React.FC<DocsProps> = ({ onBackToStudio }) => {
     {
       category: 'Modular Files & CSS',
       items: [
-        { id: 'external-css', label: 'External CSS & <link>' },
+        { id: 'external-css', label: 'External CSS / DCSS & <link>' },
         { id: 'css-properties', label: 'Supported CSS Properties' },
       ],
     },
     {
-      category: 'Rust Engine Architecture',
+      category: 'Rust Engine & CLI',
       items: [
         { id: 'engine-ast', label: 'AST & Parsing Core' },
-        { id: 'paged-layout', label: 'First-Class Paging Engine' },
         { id: 'backend-api', label: 'Rust HTTP Backend & CLI' },
+      ],
+    },
+    {
+      category: 'Export & Conversion',
+      items: [
+        { id: 'export-formats', label: 'PDF & OpenXML (DOCX) Export' },
+        { id: 'reverse-engineering', label: 'Reverse Conversion (.dxml & .dcss)' },
       ],
     },
   ];
@@ -58,11 +64,11 @@ export const DocumentationSite: React.FC<DocsProps> = ({ onBackToStudio }) => {
       <header style={{
         height: '54px',
         borderBottom: '1px solid #1e293b',
-        background: '#0b1120',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
         padding: '0 24px',
+        background: '#0f172a',
         flexShrink: 0,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
@@ -86,7 +92,7 @@ export const DocumentationSite: React.FC<DocsProps> = ({ onBackToStudio }) => {
           </button>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <BookOpen size={20} color="#38bdf8" />
-            <span style={{ fontWeight: 700, fontSize: '16px', color: '#f8fafc' }}>DDL Documentation</span>
+            <span style={{ fontWeight: 700, fontSize: '16px', color: '#f8fafc' }}>Pagina Documentation</span>
             <span style={{ fontSize: '11px', background: '#1e293b', color: '#94a3b8', padding: '2px 8px', borderRadius: '12px' }}>v0.1 Spec</span>
           </div>
         </div>
@@ -143,16 +149,17 @@ export const DocumentationSite: React.FC<DocsProps> = ({ onBackToStudio }) => {
                           padding: '8px 12px',
                           borderRadius: '6px',
                           fontSize: '13px',
-                          fontWeight: isActive ? 600 : 400,
+                          fontWeight: isActive ? 600 : 500,
                           cursor: 'pointer',
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'space-between',
                           marginBottom: '2px',
+                          transition: 'all 0.15s ease',
                         }}
                       >
                         <span>{item.label}</span>
-                        {isActive && <ChevronRight size={14} />}
+                        {isActive && <ChevronRight size={14} color="#38bdf8" />}
                       </button>
                     </li>
                   );
@@ -162,45 +169,41 @@ export const DocumentationSite: React.FC<DocsProps> = ({ onBackToStudio }) => {
           ))}
         </aside>
 
-        {/* Documentation Content View */}
+        {/* Content Pane */}
         <main style={{
           flex: 1,
           overflowY: 'auto',
-          padding: '40px 64px',
-          maxWidth: '960px',
+          padding: '40px 60px',
+          background: '#090d16',
+          maxWidth: '900px',
           lineHeight: 1.7,
         }}>
           {activeSection === 'intro' && (
             <section>
               <h1 style={{ fontSize: '32px', fontWeight: 800, color: '#f8fafc', marginBottom: '16px' }}>
-                Introduction to Document Definition Language (DDL)
+                Pagina: Document Definition Language (DDL)
               </h1>
               <p style={{ fontSize: '16px', color: '#94a3b8', marginBottom: '24px' }}>
-                DDL is an agent-friendly, human-readable document authoring specification designed to combine the intuitive mental model of HTML & CSS with first-class document typesetting and page awareness.
+                Pagina is an open-source markup specification and typesetting engine designed as a modern alternative to LaTeX, DOCX, and HTML-to-PDF print engines.
               </p>
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '32px' }}>
-                <div style={{ padding: '20px', background: '#0f172a', border: '1px solid #1e293b', borderRadius: '8px' }}>
-                  <h3 style={{ fontSize: '16px', fontWeight: 700, color: '#ef4444', marginBottom: '8px' }}>The Legacy Dilemma</h3>
-                  <p style={{ fontSize: '13px', color: '#94a3b8', margin: 0 }}>
-                    <strong>LaTeX</strong> has complex macros and silent compile errors. <strong>Markdown</strong> lacks page headers and multi-columns. <strong>DOCX/OpenXML</strong> is bloated binary zip archives impossible for humans or AI to reliably manipulate live.
-                  </p>
-                </div>
-                <div style={{ padding: '20px', background: '#0f172a', border: '1px solid #1e293b', borderRadius: '8px' }}>
-                  <h3 style={{ fontSize: '16px', fontWeight: 700, color: '#38bdf8', marginBottom: '8px' }}>The DDL Solution</h3>
-                  <p style={{ fontSize: '13px', color: '#94a3b8', margin: 0 }}>
-                    Clean XML syntax (`&lt;section&gt;`, `&lt;grid&gt;`, `&lt;paper&gt;`) coupled with true CSS styling, modular files (`.dxml` + `.css`), and a sub-millisecond Rust layout engine.
-                  </p>
-                </div>
-              </div>
+              <h2 style={{ fontSize: '20px', fontWeight: 700, color: '#38bdf8', marginTop: '32px', marginBottom: '12px' }}>
+                Core Philosophy
+              </h2>
+              <ul style={{ color: '#cbd5e1', paddingLeft: '20px', marginBottom: '24px' }}>
+                <li><b>Strict Document Hierarchy:</b> A clean document tree consisting of properties, metadata, and sections.</li>
+                <li><b>Decoupled Content & Style:</b> Content is defined in <code>.dxml</code> files, while presentation rules reside in <code>.dcss</code> or <code>.css</code> stylesheets.</li>
+                <li><b>First-Class Virtual Paper:</b> Physical units (mm, cm, pt, in), orientation, margins, running headers, and footers.</li>
+                <li><b>Native Rust Core:</b> Lightning-fast AST parsing, validation, PDF generation, and OpenXML export.</li>
+              </ul>
             </section>
           )}
 
           {activeSection === 'quickstart' && (
             <section>
-              <h1 style={{ fontSize: '28px', fontWeight: 800, color: '#f8fafc', marginBottom: '16px' }}>Quickstart Guide</h1>
+              <h1 style={{ fontSize: '28px', fontWeight: 800, color: '#f8fafc', marginBottom: '16px' }}>Quickstart</h1>
               <p style={{ color: '#94a3b8', marginBottom: '20px' }}>
-                Create your first document definition in seconds. A minimal DDL file consists of a root <code>&lt;doc&gt;</code> containing <code>&lt;props&gt;</code> and <code>&lt;body&gt;</code>.
+                Create a document with decoupled content and styling:
               </p>
 
               <CodeSnippet
@@ -209,17 +212,14 @@ export const DocumentationSite: React.FC<DocsProps> = ({ onBackToStudio }) => {
                 onCopy={copyToClipboard}
                 code={`<doc>
   <props>
+    <meta><title>Executive Summary</title></meta>
     <paper size="A4" orientation="portrait" margin="20mm" />
-    <style>
-      h1 { font-size: 24pt; color: #1e3a8a; }
-      p { line-height: 1.5; color: #334155; }
-    </style>
+    <link rel="stylesheet" href="styles.dcss" />
   </props>
-
   <body>
     <section>
-      <h1>Hello World</h1>
-      <p>This is my first document typeset natively with DDL.</p>
+      <h1>Modular Document Architecture</h1>
+      <p>Content is compiled into physical pages natively.</p>
     </section>
   </body>
 </doc>`}
@@ -227,108 +227,86 @@ export const DocumentationSite: React.FC<DocsProps> = ({ onBackToStudio }) => {
             </section>
           )}
 
-          {activeSection === 'props-block' && (
+          {activeSection === 'export-formats' && (
             <section>
-              <h1 style={{ fontSize: '28px', fontWeight: 800, color: '#f8fafc', marginBottom: '16px' }}>The &lt;props&gt; Configuration Block</h1>
+              <h1 style={{ fontSize: '28px', fontWeight: 800, color: '#f8fafc', marginBottom: '16px' }}>PDF & OpenXML (DOCX) Export</h1>
               <p style={{ color: '#94a3b8', marginBottom: '20px' }}>
-                Similar to <code>&lt;head&gt;</code> in HTML, the <code>&lt;props&gt;</code> block is the single point of truth for global document settings: paper geometries, linked stylesheets, and named page templates.
+                Pagina compiles documents natively in Rust directly into PDF and Microsoft Word OpenXML (.docx) formats with zero browser or Node.js dependencies.
               </p>
 
+              <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#38bdf8', marginTop: '24px', marginBottom: '10px' }}>
+                CLI Export Command
+              </h2>
               <CodeSnippet
-                id="props-code"
+                id="cli-export-code"
                 copiedId={copiedCode}
                 onCopy={copyToClipboard}
-                code={`<props>
-  <!-- 1. Metadata -->
-  <meta>
-    <title>Quarterly Engineering Report</title>
-    <author>Architecture Guild</author>
-  </meta>
+                code={`# Export to PDF natively
+ddl-cli export --format pdf document.dxml -o output.pdf
 
-  <!-- 2. Paper Geometry Defaults -->
-  <paper size="A4" orientation="portrait" margin="20mm" />
+# Export to OpenXML (.docx) natively
+ddl-cli export --format docx document.dxml -o output.docx`}
+              />
 
-  <!-- 3. Linked or Inline Stylesheets -->
-  <link rel="stylesheet" href="styles.css" />
+              <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#38bdf8', marginTop: '24px', marginBottom: '10px' }}>
+                HTTP Engine API
+              </h2>
+              <CodeSnippet
+                id="http-export-code"
+                copiedId={copiedCode}
+                onCopy={copyToClipboard}
+                code={`POST http://127.0.0.1:3001/api/export/pdf
+Content-Type: application/json
+{ "ddl": "<doc>...</doc>" }
 
-  <!-- 4. Named Page Styles -->
-  <page-styles>
-    <page-style name="body" default="true">
-      <running-header>
-        <left><text>Confidential Report</text></left>
-        <right><page-number/> of <total-pages/></right>
-      </running-header>
-      <running-footer>
-        <center><text>© 2026 Acme Corp</text></center>
-      </running-footer>
-    </page-style>
-  </page-styles>
-</props>`}
+POST http://127.0.0.1:3001/api/export/docx
+Content-Type: application/json
+{ "ddl": "<doc>...</doc>" }`}
               />
             </section>
           )}
 
-          {activeSection === 'css-grid' && (
+          {activeSection === 'reverse-engineering' && (
             <section>
-              <h1 style={{ fontSize: '28px', fontWeight: 800, color: '#f8fafc', marginBottom: '16px' }}>Multi-Column Flow with &lt;grid&gt;</h1>
+              <h1 style={{ fontSize: '28px', fontWeight: 800, color: '#f8fafc', marginBottom: '16px' }}>Reverse Conversion to DXML & DCSS</h1>
               <p style={{ color: '#94a3b8', marginBottom: '20px' }}>
-                Traditional word processors require brittle section breaks to introduce columns. DDL allows any block to declare columns using the <code>&lt;grid&gt;</code> tag or CSS Grid, supporting infinite nesting without page overflow bugs.
+                The Pagina engine can ingest existing DOCX and PDF files, analyze their document structure, fonts, and headings, and decompile them into clean <code>.dxml</code> markup and a matching <code>.dcss</code> stylesheet.
               </p>
 
+              <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#38bdf8', marginTop: '24px', marginBottom: '10px' }}>
+                CLI Reverse-Engineering Command
+              </h2>
               <CodeSnippet
-                id="grid-code"
+                id="cli-import-code"
                 copiedId={copiedCode}
                 onCopy={copyToClipboard}
-                code={`<!-- Two Equal Columns -->
-<grid cols="1fr 1fr" gap="6mm">
-  <div>
-    <h3>Column Left</h3>
-    <p>Flows cleanly inside its cell.</p>
-  </div>
-  <div>
-    <h3>Column Right</h3>
-    <!-- Nested Inner Grid -->
-    <grid cols="1fr 2fr" gap="3mm">
-      <div>Sub A</div>
-      <div>Sub B</div>
-    </grid>
-  </div>
-</grid>`}
+                code={`# Reverse-engineer DOCX into .dxml and .dcss
+ddl-cli import proposal.docx -o output_dir/
+
+# Reverse-engineer PDF into .dxml and .dcss
+ddl-cli import report.pdf -o output_dir/`}
               />
-            </section>
-          )}
 
-          {activeSection === 'external-css' && (
-            <section>
-              <h1 style={{ fontSize: '28px', fontWeight: 800, color: '#f8fafc', marginBottom: '16px' }}>Decoupled Styling with External CSS</h1>
-              <p style={{ color: '#94a3b8', marginBottom: '20px' }}>
-                DDL allows separating document data from presentation by linking external <code>.css</code> files.
-              </p>
-
-              <div style={{ padding: '16px', background: '#0f172a', borderLeft: '4pt solid #38bdf8', marginBottom: '20px', borderRadius: '4px' }}>
-                <b>In document.dxml:</b>
-                <pre style={{ margin: '8px 0 0 0', color: '#38bdf8', fontFamily: 'monospace' }}>
-                  &lt;link rel="stylesheet" href="styles.css" /&gt;
-                </pre>
-              </div>
-
+              <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#38bdf8', marginTop: '24px', marginBottom: '10px' }}>
+                HTTP Reverse-Engineering API
+              </h2>
               <CodeSnippet
-                id="ext-css-code"
+                id="http-import-code"
                 copiedId={copiedCode}
                 onCopy={copyToClipboard}
-                code={`/* In styles.css */
-h1 {
-  font-size: 26pt;
-  font-weight: bold;
-  color: #1e3a8a;
-  margin-bottom: 6mm;
-}
+                code={`POST http://127.0.0.1:3001/api/import/docx
+Content-Type: application/octet-stream
+[Raw DOCX binary payload]
 
-.callout {
-  background-color: #f0fdf4;
-  border-left: 4pt solid #16a34a;
-  padding: 4mm 6mm;
-  border-radius: 4px;
+POST http://127.0.0.1:3001/api/import/pdf
+Content-Type: application/octet-stream
+[Raw PDF binary payload]
+
+Response JSON:
+{
+  "success": true,
+  "dxml": "<doc>...</doc>",
+  "dcss": "h1 { ... }"
 }`}
               />
             </section>
@@ -338,7 +316,7 @@ h1 {
             <section>
               <h1 style={{ fontSize: '28px', fontWeight: 800, color: '#f8fafc', marginBottom: '16px' }}>Rust Engine & AST Core</h1>
               <p style={{ color: '#94a3b8', marginBottom: '20px' }}>
-                The layout engine is engineered in Rust (`ddl-engine`) using memory-safe, high-performance AST structures.
+                The layout engine is engineered in Rust (<code>ddl-engine</code>) using memory-safe, high-performance AST structures.
               </p>
 
               <CodeSnippet
@@ -364,6 +342,27 @@ pub enum Node {
     Text(TextNode),
     Comment(CommentNode),
 }`}
+              />
+            </section>
+          )}
+
+          {activeSection === 'backend-api' && (
+            <section>
+              <h1 style={{ fontSize: '28px', fontWeight: 800, color: '#f8fafc', marginBottom: '16px' }}>Rust HTTP Backend Daemon</h1>
+              <p style={{ color: '#94a3b8', marginBottom: '20px' }}>
+                The Axum-based server runs on <code>http://127.0.0.1:3001</code> providing parsing, export, and reverse-conversion endpoints.
+              </p>
+
+              <CodeSnippet
+                id="server-routes-code"
+                copiedId={copiedCode}
+                onCopy={copyToClipboard}
+                code={`GET  /health            # Service healthcheck
+POST /api/parse         # Parses DDL XML into AST JSON
+POST /api/export/pdf    # Native PDF binary generation
+POST /api/export/docx   # Native OpenXML (.docx) generation
+POST /api/import/docx   # Reverse conversion: DOCX -> .dxml + .dcss
+POST /api/import/pdf    # Reverse conversion: PDF -> .dxml + .dcss`}
               />
             </section>
           )}

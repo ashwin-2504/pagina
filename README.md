@@ -7,7 +7,7 @@
 [![React](https://img.shields.io/badge/React-19-blue.svg)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-blue.svg)](https://www.typescriptlang.org/)
 
-**Pagina** is an open-source, AI-agent-friendly Document Definition Language (DDL) and live typesetting engine. It replaces rigid LaTeX macros and bloated, binary DOCX files with a clean, semantic XML structure styled with standard CSS.
+**Pagina** is an open-source, AI-agent-friendly Document Definition Language (DDL) and live typesetting engine. It replaces rigid LaTeX macros and bloated, binary DOCX files with a clean, semantic XML structure (`.dxml`) styled with standard CSS (`.dcss`).
 
 ---
 
@@ -16,9 +16,11 @@
 - **HTML/CSS Mental Model**: Write intuitive tags (`<section>`, `<grid>`, `<callout>`, `<h1>`-`<h6>`, `<table>`, `<p>`) and style them using real CSS.
 - **First-Class Document Paging**: True paper coordinate systems (A4, Letter, margins, running headers/footers with dynamic page numbers and watermarks).
 - **Multi-Column Flow with CSS Grid**: Compose nested columns cleanly using `<grid cols="1fr 1fr" gap="6mm">` without page layout crashes.
-- **Modular Data & Styling**: Decouple document content (`.dxml`) from presentation (`.css`) using `<link rel="stylesheet" href="styles.css" />`.
+- **Modular Data & Styling**: Decouple document content (`.dxml`) from presentation (`.dcss`) using `<link rel="stylesheet" href="styles.dcss" />`.
+- **Native PDF & OpenXML (DOCX) Export**: High-performance binary document generation implemented directly in Rust with zero browser or Node dependencies.
+- **Full Reverse-Engineering Engine**: Ingest existing DOCX and PDF documents and decompile them into clean `.dxml` and matching `.dcss` stylesheets.
 - **Live Reactive Monaco Studio**: Built with Monaco Editor (the VS Code editing engine) featuring in-editor error squiggles, syntax formatting, grammar suggestions, and dual-tag renaming.
-- **Ultra-Fast Rust Layout Engine**: Core AST and parser written in Rust with sub-millisecond compile times.
+- **Ultra-Fast Rust Layout Engine**: Core AST, parser, and exporter written in Rust with sub-millisecond compile times.
 - **Interactive Documentation**: Built-in developer guide and tag specification portal.
 
 ---
@@ -52,6 +54,24 @@ cargo run --bin server
 
 The native Rust API will be available at `http://localhost:3001`.
 
+### Using the Rust CLI
+```bash
+cd ddl-engine
+
+# Parse a document to JSON AST
+cargo run --bin ddl-cli -- parse document.dxml
+
+# Export to PDF natively
+cargo run --bin ddl-cli -- export --format pdf document.dxml -o output.pdf
+
+# Export to OpenXML (.docx) natively
+cargo run --bin ddl-cli -- export --format docx document.dxml -o output.docx
+
+# Reverse-engineer DOCX or PDF into .dxml and .dcss
+cargo run --bin ddl-cli -- import document.docx -o output_directory/
+cargo run --bin ddl-cli -- import document.pdf -o output_directory/
+```
+
 ---
 
 ## Minimal Example
@@ -68,7 +88,7 @@ The native Rust API will be available at `http://localhost:3001`.
     <paper size="A4" orientation="portrait" margin="20mm" />
 
     <!-- External Stylesheet -->
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="styles.dcss" />
 
     <!-- Page Templates -->
     <page-styles>
@@ -108,22 +128,30 @@ The native Rust API will be available at `http://localhost:3001`.
 
 ## Project Architecture
 
+The architecture maintains strict separation between frontend client editing and native document processing:
+
 ```
 pagina/
 ├── editor/              # Frontend Studio (React + TypeScript + Monaco Editor)
 │   ├── src/
-│   │   ├── App.tsx             # Studio interface & split workspace
+│   │   ├── App.tsx              # Studio interface, export/import actions, split workspace
 │   │   ├── DocumentationSite.tsx # Connected developer docs portal
-│   │   ├── DocumentRenderer.tsx # Virtual A4 canvas & Paged renderer
-│   │   ├── formatter.ts        # DOM-tree syntax & CSS beautifier
-│   │   ├── ddlLanguage.ts      # Custom Monarch tokenizer with embedded CSS
-│   │   └── monacoFeatures.ts   # Autocomplete, dual-tag rename & hover docs
-├── ddl-engine/          # High-performance Rust layout core
+│   │   ├── DocumentRenderer.tsx # Virtual A4 canvas & paged renderer
+│   │   ├── formatter.ts         # DOM-tree syntax & CSS beautifier
+│   │   ├── ddlLanguage.ts       # Custom Monarch tokenizer with embedded CSS
+│   │   └── monacoFeatures.ts    # Autocomplete, dual-tag rename & hover docs
+├── ddl-engine/          # High-performance Rust layout & conversion core
 │   ├── src/
-│   │   ├── ast.rs              # Document & CSS AST models
-│   │   ├── parser.rs           # Resilient recursive-descent parser
-│   │   ├── bin/server.rs       # Axum HTTP backend daemon
-│   │   └── bin/ddl-cli.rs      # Native command-line binary
+│   │   ├── ast.rs               # Document & CSS AST models
+│   │   ├── parser.rs            # Resilient recursive-descent parser
+│   │   ├── docx/
+│   │   │   ├── export.rs        # OpenXML (.docx) zip/xml generator
+│   │   │   └── import.rs        # OpenXML reverse decompiler into .dxml + .dcss
+│   │   ├── pdf/
+│   │   │   ├── export.rs        # Native PDF typesetter & vector generator
+│   │   │   └── import.rs        # PDF text & structure extraction into .dxml + .dcss
+│   │   ├── bin/server.rs        # Axum HTTP backend daemon (port 3001)
+│   │   └── bin/ddl-cli.rs       # Native command-line binary
 └── LICENSE              # MIT License
 ```
 
