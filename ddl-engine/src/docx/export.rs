@@ -397,21 +397,26 @@ fn convert_node_with_indent(node: &Node, indent_level: usize, out: &mut String) 
                         .attributes
                         .get("type")
                         .map(|s| s.as_str())
-                        .or_else(|| el.inline_styles.get("list-style-type").map(|s| s.as_str()))
-                        .unwrap_or("disc");
+                        .or_else(|| el.inline_styles.get("list-style-type").map(|s| s.as_str()));
+                    let default_bullet = match indent_level % 3 {
+                        0 => "•",
+                        1 => "◦",
+                        _ => "▪",
+                    };
                     let bullet_sym = match list_type {
-                        "circle" => "◦",
-                        "square" => "▪",
-                        "dash" => "–",
-                        _ => "•",
+                        Some("circle") => "◦",
+                        Some("square") => "▪",
+                        Some("dash") => "–",
+                        Some("disc") => "•",
+                        _ => default_bullet,
                     };
                     let indent_dxa = (indent_level as u32) * 480 + 720;
                     for li in &el.children {
                         if let Node::Element(li_el) = li {
                             if li_el.tag.to_lowercase() == "li" {
                                 out.push_str(&format!(
-                                    "<w:p><w:pPr><w:pStyle w:val=\"ListBullet\"/><w:ind w:left=\"{}\" w:hanging=\"360\"/><w:spacing w:after=\"60\" w:line=\"260\" w:lineRule=\"auto\"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t xml:space=\"preserve\">{} </w:t></w:r>",
-                                    indent_dxa, bullet_sym
+                                    "<w:p><w:pPr><w:pStyle w:val=\"ListBullet\"/><w:numPr><w:ilvl w:val=\"{}\"/><w:numId w:val=\"1\"/></w:numPr><w:ind w:left=\"{}\" w:hanging=\"360\"/><w:spacing w:after=\"60\" w:line=\"260\" w:lineRule=\"auto\"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t xml:space=\"preserve\">{} </w:t></w:r>",
+                                    indent_level, indent_dxa, bullet_sym
                                 ));
                                 emit_inline_runs(li_el, false, false, false, false, false, false, false, out);
                                 out.push_str("</w:p>\n");
@@ -437,8 +442,13 @@ fn convert_node_with_indent(node: &Node, indent_level: usize, out: &mut String) 
                         .attributes
                         .get("type")
                         .map(|s| s.as_str())
-                        .or_else(|| el.inline_styles.get("list-style-type").map(|s| s.as_str()))
-                        .unwrap_or("1");
+                        .or_else(|| el.inline_styles.get("list-style-type").map(|s| s.as_str()));
+                    let default_type = match indent_level % 3 {
+                        0 => "1",
+                        1 => "a",
+                        _ => "i",
+                    };
+                    let effective_type = num_type.unwrap_or(default_type);
                     let start_idx = el
                         .attributes
                         .get("start")
@@ -449,7 +459,7 @@ fn convert_node_with_indent(node: &Node, indent_level: usize, out: &mut String) 
                     for li in &el.children {
                         if let Node::Element(li_el) = li {
                             if li_el.tag.to_lowercase() == "li" {
-                                let num_str = match num_type {
+                                let num_str = match effective_type {
                                     "a" | "lower-alpha" => format!("{}.", to_lower_alpha(start_idx + item_idx)),
                                     "A" | "upper-alpha" => format!("{}.", to_upper_alpha(start_idx + item_idx)),
                                     "i" | "lower-roman" => format!("{}.", to_roman(start_idx + item_idx)),
@@ -458,8 +468,8 @@ fn convert_node_with_indent(node: &Node, indent_level: usize, out: &mut String) 
                                 };
                                 item_idx += 1;
                                 out.push_str(&format!(
-                                    "<w:p><w:pPr><w:pStyle w:val=\"ListNumber\"/><w:ind w:left=\"{}\" w:hanging=\"360\"/><w:spacing w:after=\"60\" w:line=\"260\" w:lineRule=\"auto\"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t xml:space=\"preserve\">{} </w:t></w:r>",
-                                    indent_dxa, num_str
+                                    "<w:p><w:pPr><w:pStyle w:val=\"ListNumber\"/><w:numPr><w:ilvl w:val=\"{}\"/><w:numId w:val=\"2\"/></w:numPr><w:ind w:left=\"{}\" w:hanging=\"360\"/><w:spacing w:after=\"60\" w:line=\"260\" w:lineRule=\"auto\"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t xml:space=\"preserve\">{} </w:t></w:r>",
+                                    indent_level, indent_dxa, num_str
                                 ));
                                 emit_inline_runs(li_el, false, false, false, false, false, false, false, out);
                                 out.push_str("</w:p>\n");
@@ -627,6 +637,10 @@ fn emit_inline_runs(
                 out.push_str(&format!("<w:t xml:space=\"preserve\">{}</w:t></w:r>", escape_xml(&norm)));
             }
             Node::Element(sub_el) => {
+                let sub_tag = sub_el.tag.to_lowercase();
+                if sub_tag == "ul" || sub_tag == "ol" {
+                    continue;
+                }
                 emit_inline_runs(sub_el, bold, italic, underline, code, sup, sub, mark, out);
             }
             _ => {}

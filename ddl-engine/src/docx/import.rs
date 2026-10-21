@@ -15,14 +15,124 @@ struct InlineToken {
     highlight: bool,
 }
 
+#[derive(Debug, Clone)]
+struct FlatListItem {
+    ilvl: u32,
+    is_bullet: bool,
+    list_type: String,
+    text: String,
+}
+
+#[derive(Debug)]
+struct ItemNode {
+    text: String,
+    sublists: Vec<ListNode>,
+}
+
+#[derive(Debug)]
+struct ListNode {
+    is_bullet: bool,
+    list_type: String,
+    items: Vec<ItemNode>,
+}
+
+fn build_list_tree(items: &[FlatListItem]) -> Vec<ListNode> {
+    fn parse_items_at_level(
+        items: &[FlatListItem],
+        idx: &mut usize,
+        current_level: u32,
+    ) -> Vec<ListNode> {
+        let mut lists: Vec<ListNode> = Vec::new();
+
+        while *idx < items.len() {
+            let item = &items[*idx];
+            if item.ilvl < current_level {
+                break;
+            }
+
+            if item.ilvl > current_level {
+                if let Some(cur_list) = lists.last_mut() {
+                    if let Some(last_item) = cur_list.items.last_mut() {
+                        let sublists = parse_items_at_level(items, idx, item.ilvl);
+                        last_item.sublists.extend(sublists);
+                        continue;
+                    }
+                }
+            }
+
+            let it = &items[*idx];
+            *idx += 1;
+
+            let is_bullet = it.is_bullet;
+            let list_type = it.list_type.clone();
+            let text = it.text.clone();
+
+            let item_node = ItemNode {
+                text,
+                sublists: Vec::new(),
+            };
+
+            if let Some(cur_list) = lists.last_mut() {
+                if cur_list.is_bullet == is_bullet && cur_list.list_type == list_type {
+                    cur_list.items.push(item_node);
+                    continue;
+                }
+            }
+
+            lists.push(ListNode {
+                is_bullet,
+                list_type,
+                items: vec![item_node],
+            });
+        }
+
+        lists
+    }
+
+    let mut idx = 0;
+    let min_lvl = items.iter().map(|i| i.ilvl).min().unwrap_or(0);
+    parse_items_at_level(items, &mut idx, min_lvl)
+}
+
+fn render_list_node_dxml(node: &ListNode, indent: &str, out: &mut String) {
+    let tag = if node.is_bullet { "ul" } else { "ol" };
+    let default_type = if node.is_bullet { "disc" } else { "1" };
+    let type_attr = if !node.list_type.is_empty() && node.list_type != default_type {
+        format!(" type=\"{}\"", node.list_type)
+    } else {
+        String::new()
+    };
+
+    out.push_str(&format!("{}<{}{}>\n", indent, tag, type_attr));
+    let next_indent = format!("{}  ", indent);
+    let sub_indent = format!("{}    ", indent);
+
+    for itm in &node.items {
+        if itm.sublists.is_empty() {
+            out.push_str(&format!("{}<li>{}</li>\n", next_indent, itm.text));
+        } else {
+            if itm.text.is_empty() {
+                out.push_str(&format!("{}<li>\n", next_indent));
+            } else {
+                out.push_str(&format!("{}<li>{}\n", next_indent, itm.text));
+            }
+            for sub in &itm.sublists {
+                render_list_node_dxml(sub, &sub_indent, out);
+                out.push_str("\n");
+            }
+            out.push_str(&format!("{}</li>\n", next_indent));
+        }
+    }
+    out.push_str(&format!("{}</{}>", indent, tag));
+}
+
 #[derive(Debug)]
 enum ImportedBlock {
     Heading(u8, Option<String>, String),
     Paragraph(Option<String>, bool, String),
     Callout(String),
     Blockquote(String),
-    BulletList(String, Vec<String>),
-    NumberList(String, Vec<String>),
+    List(Vec<FlatListItem>),
     Table(Vec<Vec<Vec<String>>>),
     Grid(Vec<Vec<String>>),
 }
@@ -768,6 +878,39 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
                                 None
                             };
 
+                            let detected_list_item: Option<(bool, String, String)> = if let Some(fmt) = list_format_opt {
+                                match fmt {
+                                    ListFormat::Bullet(b_type) => Some((true, b_type, strip_bullet_prefix(trimmed))),
+                                    ListFormat::Number(n_type) => Some((false, n_type, strip_number_prefix(trimmed))),
+                                }
+                            } else if current_p_num_id.is_some() && current_p_num_id.as_deref() != Some("0") {
+                                if style_lower.contains("bullet") {
+                                    Some((true, "disc".to_string(), strip_bullet_prefix(trimmed)))
+                                } else if style_lower.contains("number") || style_lower.contains("decimal") {
+                                    Some((false, "1".to_string(), strip_number_prefix(trimmed)))
+                                } else if let Some((b_type, clean_text)) = detect_bullet_item(trimmed) {
+                                    Some((true, b_type.to_string(), strip_bullet_prefix(&clean_text)))
+                                } else if let Some((n_type, clean_text)) = detect_number_item(trimmed) {
+                                    Some((false, n_type.to_string(), strip_number_prefix(&clean_text)))
+                                } else {
+                                    Some((true, "disc".to_string(), strip_bullet_prefix(trimmed)))
+                                }
+                            } else if style_lower.contains("listbullet") {
+                                let clean_text = strip_bullet_prefix(trimmed);
+                                let (b_type, text_to_use) = detect_bullet_item(&clean_text).unwrap_or(("disc", clean_text));
+                                Some((true, b_type.to_string(), text_to_use))
+                            } else if style_lower.contains("listnumber") || style_lower.contains("numbered") {
+                                let clean_text = strip_number_prefix(trimmed);
+                                let (n_type, text_to_use) = detect_number_item(&clean_text).unwrap_or(("1", clean_text));
+                                Some((false, n_type.to_string(), text_to_use))
+                            } else if let Some((b_type, clean_text)) = detect_bullet_item(trimmed) {
+                                Some((true, b_type.to_string(), strip_bullet_prefix(&clean_text)))
+                            } else if let Some((n_type, clean_text)) = detect_number_item(trimmed) {
+                                Some((false, n_type.to_string(), strip_number_prefix(&clean_text)))
+                            } else {
+                                None
+                            };
+
                             if in_tbl {
                                 current_cell_paragraphs.push(formatted_line);
                             } else if current_p_is_callout || style_lower.contains("callout") {
@@ -778,135 +921,17 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
                                 blocks.push(ImportedBlock::Heading(2, align, formatted_line));
                             } else if style_lower.contains("heading 3") || style_lower == "3" || style_lower == "heading3" {
                                 blocks.push(ImportedBlock::Heading(3, align, formatted_line));
-                            } else if let Some(fmt) = list_format_opt {
-                                match fmt {
-                                    ListFormat::Bullet(b_type) => {
-                                        let clean_text = strip_bullet_prefix(trimmed);
-                                        if let Some(ImportedBlock::BulletList(cur_type, items)) = blocks.last_mut() {
-                                            if cur_type == &b_type {
-                                                items.push(clean_text);
-                                            } else {
-                                                blocks.push(ImportedBlock::BulletList(b_type, vec![clean_text]));
-                                            }
-                                        } else {
-                                            blocks.push(ImportedBlock::BulletList(b_type, vec![clean_text]));
-                                        }
-                                    }
-                                    ListFormat::Number(n_type) => {
-                                        let clean_text = strip_number_prefix(trimmed);
-                                        if let Some(ImportedBlock::NumberList(cur_type, items)) = blocks.last_mut() {
-                                            if cur_type == &n_type {
-                                                items.push(clean_text);
-                                            } else {
-                                                blocks.push(ImportedBlock::NumberList(n_type, vec![clean_text]));
-                                            }
-                                        } else {
-                                            blocks.push(ImportedBlock::NumberList(n_type, vec![clean_text]));
-                                        }
-                                    }
-                                }
-                            } else if current_p_num_id.is_some() && current_p_num_id.as_deref() != Some("0") {
-                                if style_lower.contains("bullet") {
-                                    let clean_text = strip_bullet_prefix(trimmed);
-                                    if let Some(ImportedBlock::BulletList(cur_type, items)) = blocks.last_mut() {
-                                        if cur_type == "disc" {
-                                            items.push(clean_text);
-                                        } else {
-                                            blocks.push(ImportedBlock::BulletList("disc".to_string(), vec![clean_text]));
-                                        }
-                                    } else {
-                                        blocks.push(ImportedBlock::BulletList("disc".to_string(), vec![clean_text]));
-                                    }
-                                } else if style_lower.contains("number") || style_lower.contains("decimal") {
-                                    let clean_text = strip_number_prefix(trimmed);
-                                    if let Some(ImportedBlock::NumberList(cur_type, items)) = blocks.last_mut() {
-                                        if cur_type == "1" {
-                                            items.push(clean_text);
-                                        } else {
-                                            blocks.push(ImportedBlock::NumberList("1".to_string(), vec![clean_text]));
-                                        }
-                                    } else {
-                                        blocks.push(ImportedBlock::NumberList("1".to_string(), vec![clean_text]));
-                                    }
-                                } else if let Some((b_type, clean_text)) = detect_bullet_item(trimmed) {
-                                    let final_text = strip_bullet_prefix(&clean_text);
-                                    if let Some(ImportedBlock::BulletList(cur_type, items)) = blocks.last_mut() {
-                                        if cur_type == b_type {
-                                            items.push(final_text);
-                                        } else {
-                                            blocks.push(ImportedBlock::BulletList(b_type.to_string(), vec![final_text]));
-                                        }
-                                    } else {
-                                        blocks.push(ImportedBlock::BulletList(b_type.to_string(), vec![final_text]));
-                                    }
-                                } else if let Some((n_type, clean_text)) = detect_number_item(trimmed) {
-                                    let final_text = strip_number_prefix(&clean_text);
-                                    if let Some(ImportedBlock::NumberList(cur_type, items)) = blocks.last_mut() {
-                                        if cur_type == n_type {
-                                            items.push(final_text);
-                                        } else {
-                                            blocks.push(ImportedBlock::NumberList(n_type.to_string(), vec![final_text]));
-                                        }
-                                    } else {
-                                        blocks.push(ImportedBlock::NumberList(n_type.to_string(), vec![final_text]));
-                                    }
+                            } else if let Some((is_bullet, list_type, clean_text)) = detected_list_item {
+                                let item = FlatListItem {
+                                    ilvl: current_p_ilvl,
+                                    is_bullet,
+                                    list_type,
+                                    text: clean_text,
+                                };
+                                if let Some(ImportedBlock::List(items)) = blocks.last_mut() {
+                                    items.push(item);
                                 } else {
-                                    let clean_text = strip_bullet_prefix(trimmed);
-                                    if let Some(ImportedBlock::BulletList(cur_type, items)) = blocks.last_mut() {
-                                        if cur_type == "disc" {
-                                            items.push(clean_text);
-                                        } else {
-                                            blocks.push(ImportedBlock::BulletList("disc".to_string(), vec![clean_text]));
-                                        }
-                                    } else {
-                                        blocks.push(ImportedBlock::BulletList("disc".to_string(), vec![clean_text]));
-                                    }
-                                }
-                            } else if style_lower.contains("listbullet") {
-                                let clean_text = strip_bullet_prefix(trimmed);
-                                let (b_type, text_to_use) = detect_bullet_item(&clean_text).unwrap_or(("disc", clean_text));
-                                if let Some(ImportedBlock::BulletList(cur_type, items)) = blocks.last_mut() {
-                                    if cur_type == b_type {
-                                        items.push(text_to_use);
-                                    } else {
-                                        blocks.push(ImportedBlock::BulletList(b_type.to_string(), vec![text_to_use]));
-                                    }
-                                } else {
-                                    blocks.push(ImportedBlock::BulletList(b_type.to_string(), vec![text_to_use]));
-                                }
-                            } else if style_lower.contains("listnumber") || style_lower.contains("numbered") {
-                                let clean_text = strip_number_prefix(trimmed);
-                                let (n_type, text_to_use) = detect_number_item(&clean_text).unwrap_or(("1", clean_text));
-                                if let Some(ImportedBlock::NumberList(cur_type, items)) = blocks.last_mut() {
-                                    if cur_type == n_type {
-                                        items.push(text_to_use);
-                                    } else {
-                                        blocks.push(ImportedBlock::NumberList(n_type.to_string(), vec![text_to_use]));
-                                    }
-                                } else {
-                                    blocks.push(ImportedBlock::NumberList(n_type.to_string(), vec![text_to_use]));
-                                }
-                            } else if let Some((b_type, clean_text)) = detect_bullet_item(trimmed) {
-                                let final_text = strip_bullet_prefix(&clean_text);
-                                if let Some(ImportedBlock::BulletList(cur_type, items)) = blocks.last_mut() {
-                                    if cur_type == b_type {
-                                        items.push(final_text);
-                                    } else {
-                                        blocks.push(ImportedBlock::BulletList(b_type.to_string(), vec![final_text]));
-                                    }
-                                } else {
-                                    blocks.push(ImportedBlock::BulletList(b_type.to_string(), vec![final_text]));
-                                }
-                            } else if let Some((n_type, clean_text)) = detect_number_item(trimmed) {
-                                let final_text = strip_number_prefix(&clean_text);
-                                if let Some(ImportedBlock::NumberList(cur_type, items)) = blocks.last_mut() {
-                                    if cur_type == n_type {
-                                        items.push(final_text);
-                                    } else {
-                                        blocks.push(ImportedBlock::NumberList(n_type.to_string(), vec![final_text]));
-                                    }
-                                } else {
-                                    blocks.push(ImportedBlock::NumberList(n_type.to_string(), vec![final_text]));
+                                    blocks.push(ImportedBlock::List(vec![item]));
                                 }
                             } else if style_lower.contains("quote") {
                                 blocks.push(ImportedBlock::Blockquote(formatted_line));
@@ -996,31 +1021,13 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
                     text
                 ));
             }
-            ImportedBlock::BulletList(b_type, items) => {
-                let type_attr = if b_type != "disc" {
-                    format!(" type=\"{}\"", b_type)
-                } else {
-                    String::new()
-                };
-                let mut list_xml = format!("      <ul{}>\n", type_attr);
-                for item in items {
-                    list_xml.push_str(&format!("        <li>{}</li>\n", item));
+            ImportedBlock::List(items) => {
+                let list_trees = build_list_tree(&items);
+                for tree in list_trees {
+                    let mut dxml_out = String::new();
+                    render_list_node_dxml(&tree, "      ", &mut dxml_out);
+                    body_nodes.push(dxml_out);
                 }
-                list_xml.push_str("      </ul>");
-                body_nodes.push(list_xml);
-            }
-            ImportedBlock::NumberList(n_type, items) => {
-                let type_attr = if n_type != "1" {
-                    format!(" type=\"{}\"", n_type)
-                } else {
-                    String::new()
-                };
-                let mut list_xml = format!("      <ol{}>\n", type_attr);
-                for item in items {
-                    list_xml.push_str(&format!("        <li>{}</li>\n", item));
-                }
-                list_xml.push_str("      </ol>");
-                body_nodes.push(list_xml);
             }
             ImportedBlock::Grid(cols) => {
                 let cols_spec = vec!["1fr"; cols.len()].join(" ");

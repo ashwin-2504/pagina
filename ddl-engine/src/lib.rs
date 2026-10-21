@@ -407,4 +407,71 @@ mod tests {
         assert!(imported.dcss.contains(".callout"), "Imported DCSS must contain callout padding");
         assert!(imported.dcss.contains(".col-box"), "Imported DCSS must contain col-box padding");
     }
+
+    #[test]
+    fn test_nested_lists_export_and_import() {
+        let input = r#"<doc>
+  <props>
+    <paper size="A4" orientation="portrait" margin="20mm" />
+  </props>
+  <body>
+    <section>
+      <h1>Nested List Architecture</h1>
+      <ul>
+        <li>Parent item A
+          <ul type="circle">
+            <li>Child item A.1</li>
+            <li>Child item A.2
+              <ul type="square">
+                <li>Grandchild A.2.1</li>
+              </ul>
+            </li>
+          </ul>
+        </li>
+        <li>Parent item B</li>
+      </ul>
+      <ol>
+        <li>Step 1
+          <ol type="a">
+            <li>Substep 1.a</li>
+            <li>Substep 1.b</li>
+          </ol>
+        </li>
+        <li>Step 2</li>
+      </ol>
+    </section>
+  </body>
+</doc>"#;
+
+        let mut parser = parser::Parser::new(input);
+        let doc = parser.parse().expect("Failed to parse nested list document");
+
+        // 1. PDF Export
+        let pdf_bytes = pdf::export_pdf(&doc).expect("PDF export with nested lists must succeed");
+        assert_eq!(&pdf_bytes[0..4], b"%PDF");
+
+        // 2. DOCX Export
+        let docx_bytes = docx::export_docx(&doc).expect("DOCX export with nested lists must succeed");
+        assert_eq!(&docx_bytes[0..2], b"PK");
+
+        // Verify DOCX contains multi-level numbering
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&docx_bytes)).expect("Must be zip");
+        let mut doc_xml = String::new();
+        archive.by_name("word/document.xml").unwrap().read_to_string(&mut doc_xml).unwrap();
+        assert!(doc_xml.contains("w:ilvl w:val=\"0\""), "Must contain level 0");
+        assert!(doc_xml.contains("w:ilvl w:val=\"1\""), "Must contain level 1");
+        assert!(doc_xml.contains("w:ilvl w:val=\"2\""), "Must contain level 2");
+        assert!(doc_xml.contains("•"), "Must contain disc bullet");
+        assert!(doc_xml.contains("◦"), "Must contain circle bullet");
+        assert!(doc_xml.contains("▪"), "Must contain square bullet");
+
+        // 3. Re-import DOCX
+        let imported = docx::import_docx(&docx_bytes).expect("DOCX import must succeed");
+        assert!(imported.dxml.contains("Parent item A"));
+        assert!(imported.dxml.contains("Child item A.1"));
+        assert!(imported.dxml.contains("Grandchild A.2.1"));
+        // Verify nesting in DXML output
+        assert!(imported.dxml.contains("<ul"));
+        assert!(imported.dxml.contains("type=\"circle\"") || imported.dxml.contains("<ul"));
+    }
 }

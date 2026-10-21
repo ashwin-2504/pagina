@@ -424,23 +424,24 @@ const RenderElement: React.FC<{ el: ElementNode }> = ({ el }) => {
   }
 
   if (tagLower === 'ul') {
-    const listType = (attributes['type'] || inline_styles?.['list-style-type'] || 'disc').toLowerCase();
-    let cssListType = 'disc';
-    if (listType === 'circle') cssListType = 'circle';
-    else if (listType === 'square') cssListType = 'square';
-    else if (listType === 'dash') cssListType = '"- "';
-    else if (listType === 'none') cssListType = 'none';
+    const rawType = attributes['type'] || inline_styles?.['list-style-type'];
+    let cssListType: string | undefined;
+    if (rawType) {
+      const lower = rawType.toLowerCase();
+      if (lower === 'circle') cssListType = 'circle';
+      else if (lower === 'square') cssListType = 'square';
+      else if (lower === 'dash') cssListType = '"- "';
+      else if (lower === 'none') cssListType = 'none';
+      else if (lower === 'disc') cssListType = 'disc';
+    }
 
     return (
       <ul
         className={className}
-        data-type={listType}
+        data-type={rawType}
         style={{
           listStyleType: cssListType,
           listStylePosition: 'outside',
-          paddingLeft: '24px',
-          marginTop: '2mm',
-          marginBottom: '3.5mm',
           textAlign: 'left',
           ...styleObj,
         }}
@@ -452,25 +453,30 @@ const RenderElement: React.FC<{ el: ElementNode }> = ({ el }) => {
   }
 
   if (tagLower === 'ol') {
-    const rawType = attributes['type'] || inline_styles?.['list-style-type'] || '1';
-    const listType = rawType.toLowerCase();
-    let cssListType = 'decimal';
-    let htmlType: '1' | 'a' | 'A' | 'i' | 'I' = '1';
+    const rawType = attributes['type'] || inline_styles?.['list-style-type'];
+    let cssListType: string | undefined;
+    let htmlType: '1' | 'a' | 'A' | 'i' | 'I' | undefined;
 
-    if (rawType === 'A' || listType === 'upper-alpha') {
-      cssListType = 'upper-alpha';
-      htmlType = 'A';
-    } else if (rawType === 'I' || listType === 'upper-roman') {
-      cssListType = 'upper-roman';
-      htmlType = 'I';
-    } else if (listType === 'a' || listType === 'lower-alpha') {
-      cssListType = 'lower-alpha';
-      htmlType = 'a';
-    } else if (listType === 'i' || listType === 'lower-roman') {
-      cssListType = 'lower-roman';
-      htmlType = 'i';
-    } else if (listType === 'none') {
-      cssListType = 'none';
+    if (rawType) {
+      const lower = rawType.toLowerCase();
+      if (rawType === 'A' || lower === 'upper-alpha') {
+        cssListType = 'upper-alpha';
+        htmlType = 'A';
+      } else if (rawType === 'I' || lower === 'upper-roman') {
+        cssListType = 'upper-roman';
+        htmlType = 'I';
+      } else if (rawType === 'a' || lower === 'lower-alpha') {
+        cssListType = 'lower-alpha';
+        htmlType = 'a';
+      } else if (rawType === 'i' || lower === 'lower-roman') {
+        cssListType = 'lower-roman';
+        htmlType = 'i';
+      } else if (rawType === '1' || lower === 'decimal') {
+        cssListType = 'decimal';
+        htmlType = '1';
+      } else if (lower === 'none') {
+        cssListType = 'none';
+      }
     }
 
     const startAttr = attributes['start'] ? parseInt(attributes['start'], 10) : undefined;
@@ -480,13 +486,10 @@ const RenderElement: React.FC<{ el: ElementNode }> = ({ el }) => {
         className={className}
         start={startAttr}
         type={htmlType}
-        data-type={listType}
+        data-type={rawType}
         style={{
           listStyleType: cssListType,
           listStylePosition: 'outside',
-          paddingLeft: '24px',
-          marginTop: '2mm',
-          marginBottom: '3.5mm',
           textAlign: 'left',
           ...styleObj,
         }}

@@ -39,24 +39,64 @@ html, body, #root {
 /* Document List Styling */
 .ddl-paper ul {
   list-style-position: outside;
-  padding-left: 24px;
+  padding-left: 22px;
   margin-top: 2mm;
   margin-bottom: 3.5mm;
   list-style-type: disc;
 }
+
+.ddl-paper ol {
+  list-style-position: outside;
+  padding-left: 22px;
+  margin-top: 2mm;
+  margin-bottom: 3.5mm;
+  list-style-type: decimal;
+}
+
+/* Automatic Hierarchical Nesting */
+.ddl-paper ul ul,
+.ddl-paper ol ul {
+  list-style-type: circle;
+  margin-top: 1mm;
+  margin-bottom: 1.5mm;
+  padding-left: 20px;
+}
+
+.ddl-paper ul ul ul,
+.ddl-paper ol ul ul,
+.ddl-paper ul ol ul,
+.ddl-paper ol ol ul {
+  list-style-type: square;
+  margin-top: 1mm;
+  margin-bottom: 1.5mm;
+  padding-left: 20px;
+}
+
+.ddl-paper ol ol,
+.ddl-paper ul ol {
+  list-style-type: lower-alpha;
+  margin-top: 1mm;
+  margin-bottom: 1.5mm;
+  padding-left: 20px;
+}
+
+.ddl-paper ol ol ol,
+.ddl-paper ul ol ol,
+.ddl-paper ol ul ol,
+.ddl-paper ul ul ol {
+  list-style-type: lower-roman;
+  margin-top: 1mm;
+  margin-bottom: 1.5mm;
+  padding-left: 20px;
+}
+
+/* Explicit type overrides take precedence */
 .ddl-paper ul[type="disc"], .ddl-paper ul[data-type="disc"] { list-style-type: disc; }
 .ddl-paper ul[type="circle"], .ddl-paper ul[data-type="circle"] { list-style-type: circle; }
 .ddl-paper ul[type="square"], .ddl-paper ul[data-type="square"] { list-style-type: square; }
 .ddl-paper ul[type="dash"], .ddl-paper ul[data-type="dash"] { list-style-type: "- "; }
 .ddl-paper ul[type="none"], .ddl-paper ul[data-type="none"] { list-style-type: none; }
 
-.ddl-paper ol {
-  list-style-position: outside;
-  padding-left: 24px;
-  margin-top: 2mm;
-  margin-bottom: 3.5mm;
-  list-style-type: decimal;
-}
 .ddl-paper ol[type="1"], .ddl-paper ol[type="decimal"], .ddl-paper ol[data-type="1"], .ddl-paper ol[data-type="decimal"] { list-style-type: decimal; }
 .ddl-paper ol[type="a"], .ddl-paper ol[type="lower-alpha"], .ddl-paper ol[data-type="a"], .ddl-paper ol[data-type="lower-alpha"] { list-style-type: lower-alpha; }
 .ddl-paper ol[type="A"], .ddl-paper ol[type="upper-alpha"], .ddl-paper ol[data-type="A"], .ddl-paper ol[data-type="upper-alpha"] { list-style-type: upper-alpha; }

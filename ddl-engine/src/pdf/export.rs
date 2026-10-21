@@ -380,6 +380,9 @@ fn collect_styled_runs(
         }
         Node::Element(el) => {
             let tag = el.tag.to_lowercase();
+            if tag == "ul" || tag == "ol" {
+                return;
+            }
             let mut b = bold;
             let mut i = italic;
             let mut f = family;
@@ -453,16 +456,26 @@ fn to_roman(mut n: usize) -> String {
     res
 }
 
-fn format_list_bullet(tag: &str, list_type: Option<&str>, idx: usize) -> String {
+fn format_list_bullet(tag: &str, list_type: Option<&str>, idx: usize, indent_level: usize) -> String {
     if tag == "ul" {
-        match list_type.unwrap_or("disc") {
+        let default_bullet = match indent_level % 3 {
+            0 => "disc",
+            1 => "circle",
+            _ => "square",
+        };
+        match list_type.unwrap_or(default_bullet) {
             "circle" => "◦ ".to_string(),
             "square" => "▪ ".to_string(),
             "dash" => "- ".to_string(),
             _ => "• ".to_string(),
         }
     } else {
-        match list_type.unwrap_or("1") {
+        let default_num = match indent_level % 3 {
+            0 => "1",
+            1 => "a",
+            _ => "i",
+        };
+        match list_type.unwrap_or(default_num) {
             "a" | "lower-alpha" => format!("{}. ", to_lower_alpha(idx)),
             "A" | "upper-alpha" => format!("{}. ", to_upper_alpha(idx)),
             "i" | "lower-roman" => format!("{}. ", to_roman(idx)),
@@ -767,7 +780,7 @@ fn render_doc_nodes(
                             .and_then(|s| s.parse::<usize>().ok())
                             .unwrap_or(1);
 
-                        *cursor_y -= 2.0;
+                        *cursor_y -= 1.5;
                         let mut item_idx = 0;
                         for child in &el.children {
                             if let Node::Element(li) = child {
@@ -776,6 +789,7 @@ fn render_doc_nodes(
                                         &tag,
                                         list_style,
                                         start_idx + item_idx,
+                                        indent_level,
                                     );
                                     item_idx += 1;
                                     let mut runs = Vec::new();
@@ -785,7 +799,15 @@ fn render_doc_nodes(
                                         bold: true,
                                         italic: false,
                                     });
+                                    let mut nested_lists: Vec<Node> = Vec::new();
                                     for li_child in &li.children {
+                                        if let Node::Element(child_el) = li_child {
+                                            let child_tag = child_el.tag.to_lowercase();
+                                            if child_tag == "ul" || child_tag == "ol" {
+                                                nested_lists.push(li_child.clone());
+                                                continue;
+                                            }
+                                        }
                                         collect_styled_runs(
                                             li_child,
                                             el_font_family,
@@ -815,11 +837,31 @@ fn render_doc_nodes(
                                         fonts,
                                         doc,
                                     );
-                                    *cursor_y -= 2.0;
+                                    *cursor_y -= 1.5;
+
+                                    if !nested_lists.is_empty() {
+                                        render_doc_nodes(
+                                            &nested_lists,
+                                            pdf_doc,
+                                            current_page,
+                                            current_layer,
+                                            page_count,
+                                            cursor_y,
+                                            left_margin,
+                                            content_width,
+                                            height_mm,
+                                            top_margin,
+                                            bottom_margin,
+                                            width_mm,
+                                            fonts,
+                                            indent_level + 1,
+                                            doc,
+                                        );
+                                    }
                                 }
                             }
                         }
-                        *cursor_y -= 2.5;
+                        *cursor_y -= 2.0;
                     }
                     "table" => {
                         render_table(
