@@ -1,4 +1,4 @@
-use crate::ast::{Document, Node, ElementNode};
+use crate::ast::{Document, ElementNode, Node};
 use std::io::{Cursor, Write};
 use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
@@ -42,10 +42,18 @@ fn generate_document_xml(doc: &Document) -> String {
         convert_node(child, &mut body_xml);
     }
 
-    // Section properties (A4 default: 11906 x 16838 dxa, margins: 1134 dxa = 20mm)
+    // Section properties (A4 default: 11906 x 16838 dxa, Letter: 12240 x 15840)
     let is_landscape = doc.props.paper.orientation.to_lowercase() == "landscape";
-    let (w, h) = if is_landscape { (16838, 11906) } else { (11906, 16838) };
+    let is_letter = doc.props.paper.size.to_lowercase() == "letter";
+    let (mut w, mut h) = if is_letter { (12240, 15840) } else { (11906, 16838) };
+    if is_landscape {
+        std::mem::swap(&mut w, &mut h);
+    }
     let orient_attr = if is_landscape { " w:orient=\"landscape\"" } else { "" };
+
+    // Dynamic margin in dxa (1mm ≈ 56.7 dxa)
+    let margin_mm = doc.props.paper.margin.val;
+    let margin_dxa = (margin_mm * 56.6929).round() as u32;
 
     format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -55,12 +63,41 @@ fn generate_document_xml(doc: &Document) -> String {
     {}
     <w:sectPr>
       <w:pgSz w:w="{}" w:h="{}"{}/>
-      <w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134" w:header="720" w:footer="720"/>
+      <w:pgMar w:top="{}" w:right="{}" w:bottom="{}" w:left="{}" w:header="720" w:footer="720"/>
     </w:sectPr>
   </w:body>
 </w:document>"#,
-        body_xml, w, h, orient_attr
+        body_xml, w, h, orient_attr, margin_dxa, margin_dxa, margin_dxa, margin_dxa
     )
+}
+
+fn get_p_align(el: &ElementNode) -> Option<&'static str> {
+    if let Some(align) = el.attributes.get("align") {
+        match align.to_lowercase().as_str() {
+            "center" => return Some("center"),
+            "right" => return Some("right"),
+            "justify" => return Some("both"),
+            _ => {}
+        }
+    }
+    if el.classes.iter().any(|c| c == "text-center") {
+        return Some("center");
+    }
+    if el.classes.iter().any(|c| c == "text-right") {
+        return Some("right");
+    }
+    if el.classes.iter().any(|c| c == "text-justify") {
+        return Some("both");
+    }
+    if let Some(style) = el.inline_styles.get("text-align") {
+        match style.to_lowercase().as_str() {
+            "center" => return Some("center"),
+            "right" => return Some("right"),
+            "justify" => return Some("both"),
+            _ => {}
+        }
+    }
+    None
 }
 
 fn convert_node(node: &Node, out: &mut String) {
@@ -90,8 +127,16 @@ fn convert_node(node: &Node, out: &mut String) {
                 "h5" => emit_heading(el, "Heading5", out),
                 "h6" => emit_heading(el, "Heading6", out),
                 "p" => {
-                    out.push_str("<w:p>");
-                    emit_inline_runs(el, false, false, false, false, out);
+                    let mut ppr = String::new();
+                    if let Some(align) = get_p_align(el) {
+                        ppr.push_str(&format!("<w:jc w:val=\"{}\"/>", align));
+                    }
+                    if ppr.is_empty() {
+                        out.push_str("<w:p>");
+                    } else {
+                        out.push_str(&format!("<w:p><w:pPr>{}</w:pPr>", ppr));
+                    }
+                    emit_inline_runs(el, false, false, false, false, false, false, false, out);
                     out.push_str("</w:p>\n");
                 }
                 "ul" => {
@@ -99,7 +144,7 @@ fn convert_node(node: &Node, out: &mut String) {
                         if let Node::Element(li_el) = li {
                             if li_el.tag.to_lowercase() == "li" {
                                 out.push_str("<w:p><w:pPr><w:pStyle w:val=\"ListBullet\"/></w:pPr>");
-                                emit_inline_runs(li_el, false, false, false, false, out);
+                                emit_inline_runs(li_el, false, false, false, false, false, false, false, out);
                                 out.push_str("</w:p>\n");
                             }
                         }
@@ -110,7 +155,7 @@ fn convert_node(node: &Node, out: &mut String) {
                         if let Node::Element(li_el) = li {
                             if li_el.tag.to_lowercase() == "li" {
                                 out.push_str("<w:p><w:pPr><w:pStyle w:val=\"ListNumber\"/></w:pPr>");
-                                emit_inline_runs(li_el, false, false, false, false, out);
+                                emit_inline_runs(li_el, false, false, false, false, false, false, false, out);
                                 out.push_str("</w:p>\n");
                             }
                         }
@@ -123,7 +168,7 @@ fn convert_node(node: &Node, out: &mut String) {
                     out.push_str(
                         "<w:p><w:pPr><w:pBdr><w:left w:val=\"single\" w:sz=\"24\" w:space=\"12\" w:color=\"16A34A\"/></w:pBdr><w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"F0FDF4\"/></w:pPr>",
                     );
-                    emit_inline_runs(el, false, false, false, false, out);
+                    emit_inline_runs(el, false, false, false, false, false, false, false, out);
                     out.push_str("</w:p>\n");
                 }
                 "hr" => {
@@ -143,8 +188,12 @@ fn convert_node(node: &Node, out: &mut String) {
 }
 
 fn emit_heading(el: &ElementNode, style: &str, out: &mut String) {
-    out.push_str(&format!("<w:p><w:pPr><w:pStyle w:val=\"{}\"/></w:pPr>", style));
-    emit_inline_runs(el, false, false, false, false, out);
+    let mut ppr = format!("<w:pStyle w:val=\"{}\"/>", style);
+    if let Some(align) = get_p_align(el) {
+        ppr.push_str(&format!("<w:jc w:val=\"{}\"/>", align));
+    }
+    out.push_str(&format!("<w:p><w:pPr>{}</w:pPr>", ppr));
+    emit_inline_runs(el, false, false, false, false, false, false, false, out);
     out.push_str("</w:p>\n");
 }
 
@@ -154,6 +203,9 @@ fn emit_inline_runs(
     mut italic: bool,
     mut underline: bool,
     mut code: bool,
+    mut sup: bool,
+    mut sub: bool,
+    mut mark: bool,
     out: &mut String,
 ) {
     let tag = el.tag.to_lowercase();
@@ -165,6 +217,15 @@ fn emit_inline_runs(
         underline = true;
     } else if tag == "code" {
         code = true;
+    } else if tag == "sup" {
+        sup = true;
+    } else if tag == "sub" {
+        sub = true;
+    } else if tag == "mark" {
+        mark = true;
+    } else if tag == "br" {
+        out.push_str("<w:r><w:br/></w:r>");
+        return;
     }
 
     for child in &el.children {
@@ -184,13 +245,21 @@ fn emit_inline_runs(
                 if code {
                     rpr.push_str("<w:rFonts w:ascii=\"Consolas\" w:hAnsi=\"Consolas\"/><w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"F1F5F9\"/>");
                 }
+                if sup {
+                    rpr.push_str("<w:vertAlign w:val=\"superscript\"/>");
+                } else if sub {
+                    rpr.push_str("<w:vertAlign w:val=\"subscript\"/>");
+                }
+                if mark {
+                    rpr.push_str("<w:highlight w:val=\"yellow\"/>");
+                }
                 if !rpr.is_empty() {
                     out.push_str(&format!("<w:rPr>{}</w:rPr>", rpr));
                 }
                 out.push_str(&format!("<w:t xml:space=\"preserve\">{}</w:t></w:r>", escape_xml(&t.content)));
             }
             Node::Element(sub_el) => {
-                emit_inline_runs(sub_el, bold, italic, underline, code, out);
+                emit_inline_runs(sub_el, bold, italic, underline, code, sup, sub, mark, out);
             }
             _ => {}
         }
@@ -230,7 +299,7 @@ fn emit_table(el: &ElementNode, out: &mut String) {
                     }
                     out.push_str("      </w:tcPr>\n");
                     out.push_str("      <w:p>");
-                    emit_inline_runs(cell, is_header, false, false, false, out);
+                    emit_inline_runs(cell, is_header, false, false, false, false, false, false, out);
                     out.push_str("</w:p>\n");
                     out.push_str("    </w:tc>\n");
                 }

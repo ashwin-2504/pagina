@@ -27,6 +27,8 @@ pub fn parse_ddl_to_json(input: &str) -> Result<String, JsValue> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::Path;
 
     #[test]
     fn test_basic_parse() {
@@ -68,7 +70,7 @@ mod tests {
   <body>
     <section>
       <h1>Modular Document Architecture</h1>
-      <p>This is a paragraph with <b>bold</b> and <i>italic</i> styling.</p>
+      <p align="center">This is a paragraph with <b>bold</b> and <i>italic</i> styling.</p>
       <table>
         <tr><th>Col A</th><th>Col B</th></tr>
         <tr><td>Data 1</td><td>Data 2</td></tr>
@@ -93,7 +95,6 @@ mod tests {
         assert!(import_res.dxml.contains("Col A"));
         assert!(import_res.dxml.contains("Data 1"));
         assert!(import_res.dcss.contains("h1 {"));
-        assert!(import_res.dcss.contains("h1 {"));
     }
 
     #[test]
@@ -106,7 +107,11 @@ mod tests {
   <body>
     <section>
       <h1>Autonomous Document Processing</h1>
-      <p>Pagina is a native document typesetting engine.</p>
+      <p align="center">Pagina is a native document typesetting engine.</p>
+      <table>
+        <tr><th>Metric</th><th>Value</th></tr>
+        <tr><td>Latency</td><td>&lt; 1ms</td></tr>
+      </table>
     </section>
   </body>
 </doc>"#;
@@ -125,5 +130,68 @@ mod tests {
         assert!(import_res.dxml.contains("<section"));
         assert!(import_res.dxml.contains("Pagina is a native document typesetting engine."));
         assert!(import_res.dcss.contains("h1 {"));
+    }
+
+    #[test]
+    fn test_real_eva_synopsis_docx() {
+        let file_path = if Path::new("../EVA Synopsis.docx").exists() {
+            "../EVA Synopsis.docx"
+        } else {
+            "EVA Synopsis.docx"
+        };
+        let bytes = fs::read(file_path).expect("EVA Synopsis.docx must exist");
+
+        // 1. Import DOCX into DXML & DCSS
+        let result = docx::import_docx(&bytes).expect("Should successfully import EVA Synopsis.docx");
+        assert!(result.dxml.contains("Information Technology Department"));
+        assert!(result.dxml.contains("U.G. PROJECT REGISTRATION FORM"));
+        assert!(result.dxml.contains("Gopale Ashwin Ashok"));
+        assert!(result.dxml.contains("EVA: Environmental Vision through Audio"));
+        assert!(result.dxml.contains("<table>"));
+        assert!(result.dxml.contains("Dr. S. K. Korde"));
+        assert!(result.dcss.contains("table {"));
+
+        // 2. Parse the produced DXML using Rust Parser
+        let mut parser = parser::Parser::new(&result.dxml);
+        let parsed_doc = parser.parse().expect("Produced DXML must be valid AST");
+        assert!(!parsed_doc.body.children.is_empty());
+
+        // 3. Re-export to DOCX
+        let reexported_docx = docx::export_docx(&parsed_doc).expect("Re-export to DOCX must succeed");
+        assert_eq!(&reexported_docx[0..2], b"PK");
+
+        // 4. Re-export to PDF
+        let reexported_pdf = pdf::export_pdf(&parsed_doc).expect("Re-export to PDF must succeed");
+        assert_eq!(&reexported_pdf[0..4], b"%PDF");
+    }
+
+    #[test]
+    fn test_real_eva_synopsis_pdf() {
+        let file_path = if Path::new("../EVA Synopsis.pdf").exists() {
+            "../EVA Synopsis.pdf"
+        } else {
+            "EVA Synopsis.pdf"
+        };
+        let bytes = fs::read(file_path).expect("EVA Synopsis.pdf must exist");
+
+        // 1. Import PDF into DXML & DCSS
+        let result = pdf::import_pdf(&bytes).expect("Should successfully import EVA Synopsis.pdf");
+        assert!(result.dxml.contains("Information Technology Department"));
+        assert!(result.dxml.contains("U.G. PROJECT REGISTRATION FORM"));
+        assert!(result.dxml.contains("Gopale Ashwin Ashok"));
+        assert!(result.dxml.contains("EVA: Environmental Vision through Audio"));
+
+        // 2. Parse the produced DXML using Rust Parser
+        let mut parser = parser::Parser::new(&result.dxml);
+        let parsed_doc = parser.parse().expect("Produced DXML must be valid AST");
+        assert!(!parsed_doc.body.children.is_empty());
+
+        // 3. Re-export to PDF
+        let reexported_pdf = pdf::export_pdf(&parsed_doc).expect("Re-export to PDF must succeed");
+        assert_eq!(&reexported_pdf[0..4], b"%PDF");
+
+        // 4. Re-export to DOCX
+        let reexported_docx = docx::export_docx(&parsed_doc).expect("Re-export to DOCX must succeed");
+        assert_eq!(&reexported_docx[0..2], b"PK");
     }
 }

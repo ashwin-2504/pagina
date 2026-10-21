@@ -5,7 +5,7 @@ use std::io::{Cursor, Read};
 
 pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Error + Send + Sync>> {
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
-    
+
     let mut doc_xml = String::new();
     {
         let mut file = archive.by_name("word/document.xml")?;
@@ -17,12 +17,21 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
 
     let mut body_nodes: Vec<String> = Vec::new();
     let mut current_p_style: Option<String> = None;
+    let mut current_p_align: Option<String> = None;
     let mut current_p_text: Vec<String> = Vec::new();
     let mut in_r = false;
     let mut in_t = false;
     let mut is_bold = false;
     let mut is_italic = false;
     let mut is_underline = false;
+    let mut is_sup = false;
+    let mut is_sub = false;
+    let mut is_highlight = false;
+
+    // Paper settings
+    let mut paper_size = "A4".to_string();
+    let mut paper_orientation = "portrait".to_string();
+    let mut paper_margin_mm = 20.0f32;
 
     // Table state
     let mut in_tbl = false;
@@ -49,6 +58,7 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
                     }
                     b"w:p" => {
                         current_p_style = None;
+                        current_p_align = None;
                         current_p_text.clear();
                     }
                     b"w:r" => {
@@ -56,6 +66,9 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
                         is_bold = false;
                         is_italic = false;
                         is_underline = false;
+                        is_sup = false;
+                        is_sub = false;
+                        is_highlight = false;
                     }
                     b"w:t" => {
                         in_t = true;
@@ -75,6 +88,15 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
                             }
                         }
                     }
+                    b"w:jc" => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:val" {
+                                if let Ok(val) = std::str::from_utf8(&attr.value) {
+                                    current_p_align = Some(val.to_string());
+                                }
+                            }
+                        }
+                    }
                     b"w:b" => {
                         if in_r {
                             is_bold = true;
@@ -88,6 +110,57 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
                     b"w:u" => {
                         if in_r {
                             is_underline = true;
+                        }
+                    }
+                    b"w:vertAlign" => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:val" {
+                                if attr.value.as_ref() == b"superscript" {
+                                    is_sup = true;
+                                } else if attr.value.as_ref() == b"subscript" {
+                                    is_sub = true;
+                                }
+                            }
+                        }
+                    }
+                    b"w:highlight" => {
+                        if in_r {
+                            is_highlight = true;
+                        }
+                    }
+                    b"w:br" => {
+                        current_p_text.push("<br />".to_string());
+                    }
+                    b"w:pgSz" => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:orient" {
+                                if let Ok(val) = std::str::from_utf8(&attr.value) {
+                                    paper_orientation = val.to_string();
+                                }
+                            } else if attr.key.as_ref() == b"w:w" {
+                                if let Ok(w_str) = std::str::from_utf8(&attr.value) {
+                                    if let Ok(w_val) = w_str.parse::<u32>() {
+                                        if w_val >= 12200 && w_val <= 12300 {
+                                            paper_size = "Letter".to_string();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    b"w:pgMar" => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:top" {
+                                if let Ok(m_str) = std::str::from_utf8(&attr.value) {
+                                    if let Ok(m_val) = m_str.parse::<f32>() {
+                                        // 1 dxa = 1/20 of a pt, 1 pt = 25.4 / 72 mm => 1 dxa ≈ 0.0176389 mm
+                                        let mm = (m_val * 0.0176389).round();
+                                        if mm >= 5.0 && mm <= 50.0 {
+                                            paper_margin_mm = mm;
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                     _ => {}
@@ -108,6 +181,14 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
                         if is_underline {
                             formatted = format!("<u>{}</u>", formatted);
                         }
+                        if is_sup {
+                            formatted = format!("<sup>{}</sup>", formatted);
+                        } else if is_sub {
+                            formatted = format!("<sub>{}</sub>", formatted);
+                        }
+                        if is_highlight {
+                            formatted = format!("<mark>{}</mark>", formatted);
+                        }
                         current_p_text.push(formatted);
                     }
                 }
@@ -123,20 +204,40 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
                     }
                     b"w:p" => {
                         let line = current_p_text.join("");
-                        if !line.trim().is_empty() {
+                        let trimmed = line.trim();
+                        if !trimmed.is_empty() {
                             let style_lower = current_p_style.as_deref().unwrap_or("").to_lowercase();
-                            let node_xml = if style_lower.contains("heading1") || style_lower == "1" {
-                                format!("      <h1>{}</h1>", line)
-                            } else if style_lower.contains("heading2") || style_lower == "2" {
-                                format!("      <h2>{}</h2>", line)
-                            } else if style_lower.contains("heading3") || style_lower == "3" {
-                                format!("      <h3>{}</h3>", line)
+                            
+                            // Align attribute
+                            let align_attr = match current_p_align.as_deref() {
+                                Some("center") => " align=\"center\"",
+                                Some("right") => " align=\"right\"",
+                                Some("both") => " align=\"justify\"",
+                                _ => "",
+                            };
+
+                            // Detect heading tags:
+                            // 1. Explicit Heading styles
+                            // 2. Bold + Underline lines with colon e.g. "<u><b>Existing System:</b></u>"
+                            // 3. Short standalone bold titles
+                            let is_h1 = style_lower.contains("heading1") || style_lower == "1";
+                            let is_h2 = style_lower.contains("heading2") || style_lower == "2"
+                                || (trimmed.starts_with("<u><b>") && trimmed.ends_with(":</b></u>") && trimmed.len() < 50)
+                                || (trimmed.starts_with("<b><u>") && trimmed.ends_with(":</u></b>") && trimmed.len() < 50);
+                            let is_h3 = style_lower.contains("heading3") || style_lower == "3";
+
+                            let node_xml = if is_h1 {
+                                format!("      <h1{}>{}</h1>", align_attr, line)
+                            } else if is_h2 {
+                                format!("      <h2{}>{}</h2>", align_attr, line)
+                            } else if is_h3 {
+                                format!("      <h3{}>{}</h3>", align_attr, line)
                             } else if style_lower.contains("listbullet") {
                                 format!("      <ul><li>{}</li></ul>", line)
                             } else if style_lower.contains("listnumber") {
                                 format!("      <ol><li>{}</li></ol>", line)
                             } else {
-                                format!("      <p>{}</p>", line)
+                                format!("      <p{}>{}</p>", align_attr, line)
                             };
 
                             if in_tbl {
@@ -187,7 +288,7 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
       <title>Imported OpenXML Document</title>
       <author>Pagina Reverse-Engineering Engine</author>
     </meta>
-    <paper size="A4" orientation="portrait" margin="20mm" />
+    <paper size="{}" orientation="{}" margin="{}mm" />
     <link rel="stylesheet" href="styles.dcss" />
     <page-styles>
       <page-style name="body" default="true">
@@ -208,6 +309,9 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
     </section>
   </body>
 </doc>"#,
+        paper_size,
+        paper_orientation,
+        paper_margin_mm,
         if body_nodes.is_empty() {
             "      <p>Empty document</p>".to_string()
         } else {
@@ -260,6 +364,18 @@ th, td {
 th {
   background-color: #f8fafc;
   font-weight: bold;
+}
+
+p[align="center"], h1[align="center"], h2[align="center"] {
+  text-align: center;
+}
+
+p[align="right"] {
+  text-align: right;
+}
+
+p[align="justify"] {
+  text-align: justify;
 }
 "#.to_string();
 

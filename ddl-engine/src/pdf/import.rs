@@ -1,42 +1,70 @@
 use crate::ImportResult;
 
 pub fn import_pdf(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Error + Send + Sync>> {
-    let doc = lopdf::Document::load_mem(bytes)?;
-    let pages = doc.get_pages();
+    // Extract full text across all pages with full Adobe CMap & ToUnicode support
+    let full_text = match pdf_extract::extract_text_from_mem(bytes) {
+        Ok(t) => t,
+        Err(_) => {
+            // Fallback to lopdf page-by-page if pdf-extract fails
+            let doc = lopdf::Document::load_mem(bytes)?;
+            let pages = doc.get_pages();
+            let mut combined = String::new();
+            for (&page_num, _) in &pages {
+                if let Ok(t) = doc.extract_text(&[page_num]) {
+                    combined.push_str(&t);
+                    combined.push('\x0C'); // Form feed page delimiter
+                }
+            }
+            combined
+        }
+    };
+
+    // Split pages by Form Feed (\x0C) or double newlines
+    let raw_pages: Vec<&str> = if full_text.contains('\x0C') {
+        full_text.split('\x0C').collect()
+    } else {
+        vec![&full_text]
+    };
 
     let mut section_xmls: Vec<String> = Vec::new();
 
-    for (&page_num, _) in &pages {
-        let text = match doc.extract_text(&[page_num]) {
-            Ok(t) => t,
-            Err(_) => String::new(),
-        };
+    for page_str in raw_pages {
+        let lines: Vec<&str> = page_str
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .collect();
+
+        if lines.is_empty() {
+            continue;
+        }
 
         let mut page_nodes: Vec<String> = Vec::new();
-        let lines: Vec<&str> = text.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
 
         for line in lines {
             let escaped = escape_xml(line);
-            // Heuristic detection based on length and capitalization
-            if (line.len() < 40 && line.chars().all(|c| !c.is_alphabetic() || c.is_uppercase()))
+
+            // Heuristics for headings:
+            // 1. Short and all-caps or title case with no period
+            // 2. Headings like "Existing System:", "Proposed System:", "Hardware Requirements:"
+            if (line.len() < 50 && line.chars().all(|c| !c.is_alphabetic() || c.is_uppercase()))
                 || line.starts_with("# ")
+                || line.ends_with(':') && line.len() < 40
             {
-                page_nodes.push(format!("      <h1>{}</h1>", escaped.trim_start_matches("# ")));
-            } else if line.len() < 60 && !line.ends_with('.') && !line.ends_with(';') {
-                page_nodes.push(format!("      <h2>{}</h2>", escaped));
+                page_nodes.push(format!("      <h2>{}</h2>", escaped.trim_start_matches("# ")));
+            } else if line.len() < 60 && !line.ends_with('.') && !line.ends_with(';') && !line.contains(" e.g.,") {
+                page_nodes.push(format!("      <h3>{}</h3>", escaped));
             } else {
                 page_nodes.push(format!("      <p>{}</p>", escaped));
             }
         }
 
-        if page_nodes.is_empty() {
-            page_nodes.push("      <p>Empty page</p>".to_string());
+        if !page_nodes.is_empty() {
+            section_xmls.push(format!(
+                "    <section page-style=\"body\">\n{}\n    </section>",
+                page_nodes.join("\n")
+            ));
         }
-
-        section_xmls.push(format!(
-            "    <section page-style=\"body\">\n{}\n    </section>",
-            page_nodes.join("\n")
-        ));
     }
 
     if section_xmls.is_empty() {
@@ -86,6 +114,14 @@ h2 {
   color: #0f172a;
   margin-top: 6mm;
   margin-bottom: 3mm;
+}
+
+h3 {
+  font-size: 13pt;
+  font-weight: 600;
+  color: #1e293b;
+  margin-top: 4mm;
+  margin-bottom: 2mm;
 }
 
 p {

@@ -88,8 +88,9 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error }
   const marginMm = doc.props?.paper?.margin?.val ?? 20;
 
   const isLandscape = orientation === 'landscape';
-  const widthMm = paperSize.toUpperCase() === 'A4' ? (isLandscape ? 297 : 210) : (isLandscape ? 279 : 216);
-  const minHeightMm = paperSize.toUpperCase() === 'A4' ? (isLandscape ? 210 : 297) : (isLandscape ? 216 : 279);
+  const isLetter = paperSize.toUpperCase() === 'LETTER';
+  const widthMm = isLetter ? (isLandscape ? 279.4 : 215.9) : (isLandscape ? 297 : 210);
+  const minHeightMm = isLetter ? (isLandscape ? 215.9 : 279.4) : (isLandscape ? 210 : 297);
 
   // Group nodes by section
   const sections = useMemo(() => {
@@ -98,7 +99,6 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error }
     let currentNodes: DocNode[] = [];
 
     const commitSection = (styleName: string) => {
-      // Filter out pure whitespace text nodes
       const meaningfulNodes = currentNodes.filter(n => {
         if (n.type === 'Text') {
           return n.content.trim().length > 0;
@@ -270,6 +270,7 @@ export const RenderNode: React.FC<{ node: DocNode }> = ({ node }) => {
 
 const RenderElement: React.FC<{ el: ElementNode }> = ({ el }) => {
   const { tag, attributes, classes, inline_styles, children } = el;
+  const tagLower = tag.toLowerCase();
 
   const styleObj: React.CSSProperties = {};
   for (const [k, v] of Object.entries(inline_styles || {})) {
@@ -277,10 +278,51 @@ const RenderElement: React.FC<{ el: ElementNode }> = ({ el }) => {
     (styleObj as Record<string, string>)[camel] = v;
   }
 
+  // Handle align attribute e.g. align="center"
+  if (attributes['align']) {
+    const alignVal = attributes['align'].toLowerCase();
+    styleObj.textAlign = alignVal === 'both' ? 'justify' : (alignVal as any);
+  }
+
   const className = classes ? classes.join(' ') : undefined;
 
-  // Grid Element: Works on any level, including fully nested grids
-  if (tag === 'grid') {
+  // Void Elements: br, hr, img
+  if (tagLower === 'br') {
+    return <br className={className} />;
+  }
+
+  if (tagLower === 'hr') {
+    return (
+      <hr
+        className={className}
+        style={{
+          border: 'none',
+          borderBottom: '1px solid #cbd5e1',
+          margin: '4mm 0',
+          width: '100%',
+          ...styleObj,
+        }}
+      />
+    );
+  }
+
+  if (tagLower === 'img') {
+    return (
+      <img
+        src={attributes['src']}
+        alt={attributes['alt'] || ''}
+        className={className}
+        style={{
+          maxWidth: '100%',
+          display: 'block',
+          ...styleObj,
+        }}
+      />
+    );
+  }
+
+  // Grid Element
+  if (tagLower === 'grid') {
     const cols = attributes['cols'] || '1fr 1fr';
     const gap = attributes['gap'] || '16px';
     return (
@@ -300,15 +342,15 @@ const RenderElement: React.FC<{ el: ElementNode }> = ({ el }) => {
     );
   }
 
-  if (tag === 'page-number') {
+  if (tagLower === 'page-number') {
     return <span>1</span>;
   }
 
-  if (tag === 'total-pages') {
+  if (tagLower === 'total-pages') {
     return <span>1</span>;
   }
 
-  if (tag === 'callout') {
+  if (tagLower === 'callout') {
     return (
       <div
         className={`callout ${className || ''}`}
@@ -327,15 +369,69 @@ const RenderElement: React.FC<{ el: ElementNode }> = ({ el }) => {
     );
   }
 
+  // Default table styling
+  if (tagLower === 'table') {
+    return (
+      <table
+        className={className}
+        style={{
+          width: '100%',
+          borderCollapse: 'collapse',
+          margin: '4mm 0',
+          ...styleObj,
+        }}
+        {...attributes}
+      >
+        <RenderChildren nodes={children} />
+      </table>
+    );
+  }
+
+  if (tagLower === 'th') {
+    return (
+      <th
+        className={className}
+        style={{
+          border: '1px solid #cbd5e1',
+          padding: '2mm 3mm',
+          textAlign: 'left',
+          backgroundColor: '#f8fafc',
+          fontWeight: 'bold',
+          ...styleObj,
+        }}
+        {...attributes}
+      >
+        <RenderChildren nodes={children} />
+      </th>
+    );
+  }
+
+  if (tagLower === 'td') {
+    return (
+      <td
+        className={className}
+        style={{
+          border: '1px solid #cbd5e1',
+          padding: '2mm 3mm',
+          textAlign: 'left',
+          ...styleObj,
+        }}
+        {...attributes}
+      >
+        <RenderChildren nodes={children} />
+      </td>
+    );
+  }
+
   const validTags = new Set([
     'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-    'p', 'b', 'strong', 'i', 'em', 'u', 's', 'sup', 'sub',
-    'div', 'span', 'code', 'pre', 'hr', 'blockquote',
-    'table', 'thead', 'tbody', 'tr', 'th', 'td',
+    'p', 'b', 'strong', 'i', 'em', 'u', 's', 'del', 'mark', 'sup', 'sub', 'small',
+    'div', 'span', 'code', 'pre', 'blockquote',
+    'thead', 'tbody', 'tfoot', 'tr',
     'ul', 'ol', 'li'
   ]);
 
-  const HtmlTag = validTags.has(tag.toLowerCase()) ? (tag.toLowerCase() as keyof React.JSX.IntrinsicElements) : 'div';
+  const HtmlTag = validTags.has(tagLower) ? (tagLower as keyof React.JSX.IntrinsicElements) : 'div';
 
   return React.createElement(
     HtmlTag,
