@@ -235,7 +235,7 @@ mod tests {
             .contains(r#"<img class="header-image" src="image1.png" />"#));
         assert!(result
             .dxml
-            .contains(r#"<img class="footer-image full-bleed" src="image2.png" />"#));
+            .contains(r#"<img class="footer-image" src="image2.png" />"#));
         assert!(
             !result.dxml.contains("header-logo"),
             "Must not use rigid hardcoded header-logo class"
@@ -251,7 +251,7 @@ mod tests {
         assert!(result.dxml.contains("Dr. S. K. Korde"));
         assert!(result.dcss.contains("table {"));
         assert!(result.dcss.contains(".header-image"));
-        assert!(result.dcss.contains(".footer-image.full-bleed"));
+        assert!(result.dcss.contains(".footer-image"));
         assert!(
             result.assets.contains_key("image1.png") || result.assets.contains_key("image2.png"),
             "Media assets must be extracted"

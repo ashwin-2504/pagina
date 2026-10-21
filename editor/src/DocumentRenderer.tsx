@@ -23,21 +23,6 @@ export const PageContext = React.createContext<{ pageNum: number; totalPages: nu
   totalPages: 1,
 });
 
-function hasFullBleedImage(nodes?: DocNode[]): boolean {
-  if (!nodes) return false;
-  return nodes.some(n => {
-    if (n.type === 'Element') {
-      const el = n as ElementNode;
-      if (el.tag.toLowerCase() === 'img') {
-        if (el.classes?.includes('full-bleed') || el.inline_styles?.width === '100%') {
-          return true;
-        }
-      }
-      return hasFullBleedImage(el.children);
-    }
-    return false;
-  });
-}
 
 function hasImageNode(nodes?: DocNode[]): boolean {
   if (!nodes) return false;
@@ -421,16 +406,11 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error, 
     for (let sIdx = 0; sIdx < sectionsWithSplitBlocks.length; sIdx++) {
       const sec = sectionsWithSplitBlocks[sIdx];
       const pageStyle: PageStyle | undefined = doc.props?.page_styles?.[sec.pageStyleName];
-      const hasFullBleedFooter = pageStyle?.running_footer && (
-        hasFullBleedImage(pageStyle.running_footer.center) ||
-        hasFullBleedImage(pageStyle.running_footer.left) ||
-        hasFullBleedImage(pageStyle.running_footer.right)
-      );
 
       const pxPerMm = 96 / 25.4;
       const pageHeightPx = heightMm * pxPerMm;
       const topMarginPx = marginMm * pxPerMm;
-      const bottomMarginPx = (hasFullBleedFooter ? 36 : marginMm) * pxPerMm;
+      const bottomMarginPx = marginMm * pxPerMm;
 
       let headerHeightPx = 0;
       if (pageStyle?.running_header) {
@@ -443,12 +423,10 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error, 
 
       let footerHeightPx = 0;
       if (pageStyle?.running_footer) {
-        if (!hasFullBleedFooter) {
-          const hasImg = hasImageNode(pageStyle.running_footer.center) ||
-                         hasImageNode(pageStyle.running_footer.left) ||
-                         hasImageNode(pageStyle.running_footer.right);
-          footerHeightPx = (hasImg ? 28 : 14) * pxPerMm;
-        }
+        const hasImg = hasImageNode(pageStyle.running_footer.center) ||
+                       hasImageNode(pageStyle.running_footer.left) ||
+                       hasImageNode(pageStyle.running_footer.right);
+        footerHeightPx = (hasImg ? 28 : 14) * pxPerMm;
       }
       const footerGapPx = footerHeightPx > 0 ? 3 * pxPerMm : 0;
 
@@ -456,9 +434,7 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error, 
       // physical page edge. Neither participates in the body flow, so the
       // same document margin applies to both sides of the page.
       const reservedTopPx = Math.max(topMarginPx, headerDistanceMm * pxPerMm + headerHeightPx + headerGapPx);
-      const reservedBottomPx = hasFullBleedFooter
-        ? bottomMarginPx
-        : Math.max(bottomMarginPx, footerDistanceMm * pxPerMm + footerHeightPx + footerGapPx);
+      const reservedBottomPx = Math.max(bottomMarginPx, footerDistanceMm * pxPerMm + footerHeightPx + footerGapPx);
       const availableHeightPx = Math.max(
         200,
         pageHeightPx - reservedTopPx - reservedBottomPx,
@@ -559,11 +535,6 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error, 
       >
         {pages.map((page, pageIdx) => {
           const pageStyle: PageStyle | undefined = doc.props.page_styles[page.pageStyleName];
-          const hasFullBleedFooter = pageStyle?.running_footer && (
-            hasFullBleedImage(pageStyle.running_footer.center) ||
-            hasFullBleedImage(pageStyle.running_footer.left) ||
-            hasFullBleedImage(pageStyle.running_footer.right)
-          );
           const headerHasImage = Boolean(pageStyle?.running_header && (
             hasImageNode(pageStyle.running_header.center) ||
             hasImageNode(pageStyle.running_header.left) ||
@@ -575,13 +546,11 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error, 
             hasImageNode(pageStyle.running_footer.right)
           ));
           const headerHeightMm = pageStyle?.running_header ? (headerHasImage ? 38 : 14) : 0;
-          const footerHeightMm = pageStyle?.running_footer && !hasFullBleedFooter ? (footerHasImage ? 28 : 14) : 0;
+          const footerHeightMm = pageStyle?.running_footer ? (footerHasImage ? 28 : 14) : 0;
           const headerGapMm = headerHeightMm > 0 ? (headerHasImage ? 3 : 8) : 0;
           const footerGapMm = footerHeightMm > 0 ? 3 : 0;
           const contentTopMm = Math.max(marginMm, headerDistanceMm + headerHeightMm + headerGapMm);
-          const contentBottomMm = hasFullBleedFooter
-            ? 36
-            : Math.max(marginMm, footerDistanceMm + footerHeightMm + footerGapMm);
+          const contentBottomMm = Math.max(marginMm, footerDistanceMm + footerHeightMm + footerGapMm);
           return (
             <div key={pageIdx} className="page-wrapper" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
               {/* Page Indicator Header */}
@@ -734,26 +703,6 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error, 
 
                   {/* Running Footer */}
                   {pageStyle?.running_footer && (() => {
-                    if (hasFullBleedFooter) {
-                      const bleedNodes = (pageStyle.running_footer.center && pageStyle.running_footer.center.length > 0)
-                        ? pageStyle.running_footer.center
-                        : ((pageStyle.running_footer.left && pageStyle.running_footer.left.length > 0)
-                          ? pageStyle.running_footer.left
-                          : pageStyle.running_footer.right);
-                      return (
-                        <footer className="running-footer full-bleed" data-ddl-line={pageStyle.running_footer.line} style={{
-                          position: 'absolute',
-                          bottom: 0,
-                          left: 0,
-                          width: '100%',
-                          lineHeight: 0,
-                          zIndex: 2,
-                          userSelect: 'none',
-                        }}>
-                          <RenderChildren nodes={bleedNodes} />
-                        </footer>
-                      );
-                    }
                     const hasImg = hasImageNode(pageStyle.running_footer.center) ||
                                    hasImageNode(pageStyle.running_footer.left) ||
                                    hasImageNode(pageStyle.running_footer.right);

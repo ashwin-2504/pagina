@@ -286,7 +286,7 @@ fn draw_image_on_layer(
     printpdf_img.add_to_layer(layer.clone(), transform);
 }
 
-fn get_header_and_footer_heights(doc: &Document, width_mm: f32, content_width: f32) -> (f32, f32) {
+fn get_header_and_footer_heights(doc: &Document, _width_mm: f32, content_width: f32) -> (f32, f32) {
     let ps = get_active_page_style(doc);
     let mut header_h = 0.0f32;
     let mut footer_h = 0.0f32;
@@ -328,22 +328,11 @@ fn get_header_and_footer_heights(doc: &Document, width_mm: f32, content_width: f
                         if let Ok(dyn_img) = ::image::load_from_memory(&bytes) {
                             let px_w = dyn_img.width() as f32;
                             let px_h = dyn_img.height() as f32;
-                            let aspect = if px_w > 0.0 { px_h / px_w } else { 0.15 };
-                            let is_full_bleed = img_el.classes.iter().any(|c| c == "full-bleed")
-                                || aspect < 0.22
-                                || img_el
-                                    .inline_styles
-                                    .get("width")
-                                    .map(|s| s.contains("100%"))
-                                    .unwrap_or(false);
-                            if is_full_bleed {
-                                let target_h = width_mm * aspect;
-                                footer_h = target_h + 6.0;
-                            } else {
-                                let target_w = content_width.min(180.0);
-                                let target_h = (target_w * aspect).min(25.0);
-                                footer_h = target_h + 8.0;
-                            }
+                            let aspect = if px_w > 0.0 { px_h / px_w } else { 0.2 };
+                            let max_target_h = 35.0_f32;
+                            let target_w = content_width.min(max_target_h / aspect);
+                            let target_h = target_w * aspect;
+                            footer_h = target_h + 8.0;
                         }
                     }
                 }
@@ -364,7 +353,7 @@ fn draw_running_header_footer(
     page_num: usize,
     left_margin: f32,
     content_width: f32,
-    width_mm: f32,
+    _width_mm: f32,
     height_mm: f32,
     font_reg: &IndirectFontRef,
     doc: &Document,
@@ -398,7 +387,7 @@ fn draw_running_header_footer(
                     let target_w = content_width.min(max_target_h / aspect);
                     let target_h = target_w * aspect;
                     let img_x = left_margin + (content_width - target_w) / 2.0;
-                    let img_y = height_mm - target_h - 4.0;
+                    let img_y = (height_mm - header_distance - target_h).max(0.0);
                     draw_image_on_layer(layer, &dyn_img, img_x, img_y, target_w, target_h);
                     drew_header_image = true;
                 }
@@ -480,28 +469,13 @@ fn draw_running_header_footer(
                 if let Ok(dyn_img) = ::image::load_from_memory(&bytes) {
                     let px_w = dyn_img.width() as f32;
                     let px_h = dyn_img.height() as f32;
-                    let aspect = if px_w > 0.0 { px_h / px_w } else { 0.15 };
-                    let is_full_bleed = img_el.classes.iter().any(|c| c == "full-bleed")
-                        || aspect < 0.22
-                        || img_el
-                            .inline_styles
-                            .get("width")
-                            .map(|s| s.contains("100%"))
-                            .unwrap_or(false);
-
-                    if is_full_bleed {
-                        let target_w = width_mm;
-                        let target_h = target_w * aspect;
-                        let img_x = 0.0;
-                        let img_y = 0.0;
-                        draw_image_on_layer(layer, &dyn_img, img_x, img_y, target_w, target_h);
-                    } else {
-                        let target_w = content_width.min(180.0);
-                        let target_h = (target_w * aspect).min(24.0);
-                        let img_x = left_margin + (content_width - target_w) / 2.0;
-                        let img_y = footer_distance;
-                        draw_image_on_layer(layer, &dyn_img, img_x, img_y, target_w, target_h);
-                    }
+                    let aspect = if px_w > 0.0 { px_h / px_w } else { 0.2 };
+                    let max_target_h = 35.0_f32;
+                    let target_w = content_width.min(max_target_h / aspect);
+                    let target_h = target_w * aspect;
+                    let img_x = left_margin + (content_width - target_w) / 2.0;
+                    let img_y = footer_distance;
+                    draw_image_on_layer(layer, &dyn_img, img_x, img_y, target_w, target_h);
                     drew_footer_image = true;
                 }
             }
