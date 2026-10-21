@@ -1,0 +1,24 @@
+[package]
+name = "pagina"
+version = "0.1.0"
+description = "Pagina - Document Typesetting Studio Native Desktop App"
+authors = ["Ashwin Gopale <ashwingopale2005@gmail.com>"]
+license = "MIT"
+edition = "2024"
+rust-version = "1.90"
+
+[lib]
+name = "app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.7.4" }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+log = "0.4"
+tauri = { version = "2.12.5" }
+tauri-plugin-log = "2"
+base64 = "0.22"
+ddl-engine = { path = "../../ddl-engine" }

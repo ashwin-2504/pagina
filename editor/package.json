@@ -7,7 +7,10 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
   },
   "dependencies": {
     "@codemirror/lang-css": "^6.3.1",
@@ -16,6 +19,7 @@
     "@codemirror/state": "^6.7.6",
     "@codemirror/view": "^6.43.15",
     "@monaco-editor/react": "^4.7.0",
+    "@tauri-apps/api": "^2.12.4",
     "codemirror": "^6.0.2",
     "lucide-react": "^1.61.0",
     "monaco-editor": "^0.57.0",
@@ -23,6 +27,7 @@
     "react-dom": "^19.3.1"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.12.4",
     "@types/node": "^24.19.2",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",

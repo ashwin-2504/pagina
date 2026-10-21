@@ -27,8 +27,13 @@ import { setupDdlLanguageTokenizer } from './ddlLanguage';
 import { INITIAL_FILES } from './defaultFiles';
 import type { ProjectFile } from './defaultFiles';
 import type { ParsedDocument } from './types';
-
-const ENGINE_API_BASE = 'http://127.0.0.1:3001';
+import {
+  isTauriApp,
+  checkEngineStatus,
+  exportDocument,
+  importDocument,
+  type EngineStatus,
+} from './engineBridge';
 
 export function App() {
   const monaco = useMonaco();
@@ -46,24 +51,24 @@ export function App() {
   const [isCompiling, setIsCompiling] = useState<boolean>(false);
   const [isExporting, setIsExporting] = useState<boolean>(false);
   const [isImporting, setIsImporting] = useState<boolean>(false);
-  const [engineOnline, setEngineOnline] = useState<boolean>(false);
+  const [engineStatus, setEngineStatus] = useState<EngineStatus>({
+    online: false,
+    mode: 'offline',
+    label: isTauriApp() ? 'Connecting to Tauri...' : 'Connecting...',
+  });
   const [zoom, setZoom] = useState<number>(0.85);
   const [viewMode, setViewMode] = useState<string>('editor');
 
   const activeFile = files.find(f => f.id === activeFileId) || files[0];
 
-  // Check Rust Engine Health
+  // Check Rust Engine Health (Tauri native IPC or local Axum daemon)
   useEffect(() => {
-    const checkEngine = async () => {
-      try {
-        const res = await fetch(`${ENGINE_API_BASE}/health`, { signal: AbortSignal.timeout(2000) });
-        setEngineOnline(res.ok);
-      } catch {
-        setEngineOnline(false);
-      }
+    const updateStatus = async () => {
+      const status = await checkEngineStatus();
+      setEngineStatus(status);
     };
-    checkEngine();
-    const interval = setInterval(checkEngine, 8000);
+    updateStatus();
+    const interval = setInterval(updateStatus, isTauriApp() ? 15000 : 8000);
     return () => clearInterval(interval);
   }, []);
 
@@ -231,24 +236,13 @@ export function App() {
     compileProject(nextFiles);
   };
 
-  // Export Document via Native Rust Engine
+  // Export Document via Native Rust Engine (Tauri IPC or Axum Server)
   const handleExport = async (format: 'pdf' | 'docx') => {
     const mainDocFile = files.find(f => f.name.endsWith('.dxml') || f.name.endsWith('.xml')) || files[0];
     setIsExporting(true);
 
     try {
-      const response = await fetch(`${ENGINE_API_BASE}/api/export/${format}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ddl: mainDocFile.content }),
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(errorText || `Export to ${format.toUpperCase()} failed.`);
-      }
-
-      const blob = await response.blob();
+      const blob = await exportDocument(format, mainDocFile.content);
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -258,7 +252,7 @@ export function App() {
       a.remove();
       window.URL.revokeObjectURL(url);
     } catch (err: any) {
-      alert(`Export Error: ${err.message || 'Make sure the Rust backend engine is running on port 3001.'}`);
+      alert(`Export Error: ${err.message || 'Export failed.'}`);
     } finally {
       setIsExporting(false);
     }
@@ -277,25 +271,10 @@ export function App() {
       return;
     }
 
-    const endpoint = isDocx ? 'docx' : 'pdf';
     setIsImporting(true);
 
     try {
-      const arrayBuffer = await file.arrayBuffer();
-      const response = await fetch(`${ENGINE_API_BASE}/api/import/${endpoint}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/octet-stream' },
-        body: arrayBuffer,
-      });
-
-      if (!response.ok) {
-        throw new Error(`Engine returned ${response.status}: ${await response.text()}`);
-      }
-
-      const result = await response.json();
-      if (!result.success || !result.dxml) {
-        throw new Error(result.error || 'Failed to reverse-engineer document structure.');
-      }
+      const result = await importDocument(file);
 
       const newFiles: ProjectFile[] = [
         {
@@ -316,10 +295,12 @@ export function App() {
       setActiveFileId('document-dxml');
       compileProject(newFiles);
     } catch (err: any) {
-      alert(`Import Failed: ${err.message || 'Ensure Rust engine is operational.'}`);
+      alert(`Import Error: ${err.message || 'Failed to import document.'}`);
     } finally {
       setIsImporting(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
     }
   };
 
@@ -364,13 +345,13 @@ export function App() {
                 fontSize: '11px',
                 padding: '2px 8px',
                 borderRadius: '6px',
-                background: engineOnline ? 'rgba(34, 197, 94, 0.15)' : 'rgba(239, 68, 68, 0.15)',
-                color: engineOnline ? '#4ade80' : '#f87171',
-                border: engineOnline ? '1px solid rgba(34, 197, 94, 0.3)' : '1px solid rgba(239, 68, 68, 0.3)',
+                background: engineStatus.online ? 'rgba(34, 197, 94, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                color: engineStatus.online ? '#4ade80' : '#f87171',
+                border: engineStatus.online ? '1px solid rgba(34, 197, 94, 0.3)' : '1px solid rgba(239, 68, 68, 0.3)',
                 marginLeft: '8px',
               }}>
-                {engineOnline ? <CheckCircle2 size={12} /> : <AlertTriangle size={12} />}
-                <span>{engineOnline ? 'Rust Engine Online' : 'Engine Offline (Port 3001)'}</span>
+                {engineStatus.online ? <CheckCircle2 size={12} /> : <AlertTriangle size={12} />}
+                <span>{engineStatus.label}</span>
               </div>
 
               {isCompiling && (

@@ -3,16 +3,18 @@
 > **Modern, declarative document authoring combining the mental model of HTML & CSS with first-class document typesetting.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Rust](https://img.shields.io/badge/Rust-1.85+-orange.svg)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/Rust-1.90+-orange.svg)](https://www.rust-lang.org/)
+[![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB.svg)](https://v2.tauri.app/)
 [![React](https://img.shields.io/badge/React-19-blue.svg)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-blue.svg)](https://www.typescriptlang.org/)
 
-**Pagina** is an open-source, AI-agent-friendly Document Definition Language (DDL) and live typesetting engine. It replaces rigid LaTeX macros and bloated, binary DOCX files with a clean, semantic XML structure (`.dxml`) styled with standard CSS (`.dcss`).
+**Pagina** is an open-source, AI-agent-friendly Document Definition Language (DDL) and live typesetting engine available as both a native desktop application (powered by Tauri 2 and Rust) and a lightweight web studio. It replaces rigid LaTeX macros and bloated, binary DOCX files with a clean, semantic XML structure (`.dxml`) styled with standard CSS (`.dcss`).
 
 ---
 
 ## Features
 
+- **Native Desktop Application**: Powered by Tauri 2, embedding the high-performance Rust layout engine directly in-process with zero network overhead.
 - **HTML/CSS Mental Model**: Write intuitive tags (`<section>`, `<grid>`, `<callout>`, `<h1>`-`<h6>`, `<table>`, `<p>`) and style them using real CSS.
 - **First-Class Document Paging**: True paper coordinate systems (A4, Letter, margins, running headers/footers with dynamic page numbers and watermarks).
 - **Multi-Column Flow with CSS Grid**: Compose nested columns cleanly using `<grid cols="1fr 1fr" gap="6mm">` without page layout crashes.
@@ -21,7 +23,7 @@
 - **Full Reverse-Engineering Engine**: Ingest existing DOCX and PDF documents and decompile them into clean `.dxml` and matching `.dcss` stylesheets.
 - **Live Reactive Monaco Studio**: Built with Monaco Editor (the VS Code editing engine) featuring in-editor error squiggles, syntax formatting, grammar suggestions, and dual-tag renaming.
 - **Ultra-Fast Rust Layout Engine**: Core AST, parser, and exporter written in Rust with sub-millisecond compile times.
-- **Interactive Documentation**: Built-in developer guide and tag specification portal.
+- **Dual-Mode Operation**: Direct Tauri IPC when running natively on the desktop, with seamless fallback to an Axum HTTP daemon when running in web preview mode.
 
 ---
 
@@ -29,9 +31,9 @@
 
 ### Prerequisites
 - [Node.js](https://nodejs.org) (v18+)
-- [Rust & Cargo](https://rustup.rs) (for native engine compilation)
+- [Rust & Cargo](https://rustup.rs) (v1.90+)
 
-### Running the Live Studio
+### Running the Native Desktop Application (Tauri)
 ```bash
 # Clone the repository
 git clone https://github.com/ashwin-2504/pagina.git
@@ -40,23 +42,31 @@ cd pagina/editor
 # Install dependencies
 npm install
 
-# Start the live development editor
+# Run native desktop application with live reload
+npm run tauri:dev
+```
+
+To create an optimized standalone desktop executable installer for your operating system:
+```bash
+npm run tauri:build
+```
+
+### Running the Web Studio Preview (Optional)
+```bash
+# Terminal 1: Start the Rust backend engine daemon
+cd pagina/ddl-engine
+cargo run --bin server
+
+# Terminal 2: Start the frontend Vite web server
+cd pagina/editor
 npm run dev
 ```
 
 Open [http://localhost:5173](http://localhost:5173) in your browser.
 
-### Running the Rust Engine Backend
-```bash
-cd ddl-engine
-cargo run --bin server
-```
-
-The native Rust API will be available at `http://localhost:3001`.
-
 ### Using the Rust CLI
 ```bash
-cd ddl-engine
+cd pagina/ddl-engine
 
 # Parse a document to JSON AST
 cargo run --bin ddl-cli -- parse document.dxml
@@ -128,19 +138,26 @@ cargo run --bin ddl-cli -- import document.pdf -o output_directory/
 
 ## Project Architecture
 
-The architecture maintains strict separation between frontend client editing and native document processing:
+The architecture maintains strict separation between the native typesetting engine, desktop application shell, and frontend studio:
 
 ```
 pagina/
-├── editor/              # Frontend Studio (React + TypeScript + Monaco Editor)
-│   ├── src/
-│   │   ├── App.tsx              # Studio interface, export/import actions, split workspace
-│   │   ├── DocumentationSite.tsx # Connected developer docs portal
-│   │   ├── DocumentRenderer.tsx # Virtual A4 canvas & paged renderer
-│   │   ├── formatter.ts         # DOM-tree syntax & CSS beautifier
-│   │   ├── ddlLanguage.ts       # Custom Monarch tokenizer with embedded CSS
-│   │   └── monacoFeatures.ts    # Autocomplete, dual-tag rename & hover docs
-├── ddl-engine/          # High-performance Rust layout & conversion core
+├── editor/
+│   ├── src-tauri/               # Tauri 2 Desktop Application Host (Rust)
+│   │   ├── Cargo.toml           # Links ddl-engine directly in-process
+│   │   ├── tauri.conf.json      # Window, permission & bundle configuration
+│   │   └── src/
+│   │       ├── lib.rs           # Native Tauri commands (export_pdf, export_docx, import)
+│   │       └── main.rs          # Application entrypoint
+│   └── src/                     # Studio Frontend (React + TypeScript + Monaco Editor)
+│       ├── App.tsx              # Studio interface, export/import actions, split workspace
+│       ├── engineBridge.ts      # Dual-mode bridge (Tauri IPC vs Axum HTTP fallback)
+│       ├── DocumentRenderer.tsx # Virtual A4 canvas & paged renderer
+│       ├── DocumentationSite.tsx # Connected developer docs portal
+│       ├── formatter.ts         # DOM-tree syntax & CSS beautifier
+│       ├── ddlLanguage.ts       # Custom Monarch tokenizer with embedded CSS
+│       └── monacoFeatures.ts    # Autocomplete, dual-tag rename & hover docs
+├── ddl-engine/                  # High-performance Rust layout & conversion core
 │   ├── src/
 │   │   ├── ast.rs               # Document & CSS AST models
 │   │   ├── parser.rs            # Resilient recursive-descent parser
@@ -152,7 +169,7 @@ pagina/
 │   │   │   └── import.rs        # PDF text & structure extraction into .dxml + .dcss
 │   │   ├── bin/server.rs        # Axum HTTP backend daemon (port 3001)
 │   │   └── bin/ddl-cli.rs       # Native command-line binary
-└── LICENSE              # MIT License
+└── LICENSE                      # MIT License
 ```
 
 ---
