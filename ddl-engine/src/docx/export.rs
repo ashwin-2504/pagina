@@ -101,14 +101,16 @@ fn generate_header_xml(doc: &Document) -> String {
       <w:t>{}</w:t>
     </w:r>
     <w:r><w:tab/></w:r>
-    <w:r>
-      <w:rPr>
-        <w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/>
-        <w:sz w:val="18"/>
-        <w:color w:val="64748B"/>
-      </w:rPr>
-      <w:fldSimple w:instr="PAGE"/>
-    </w:r>
+    <w:fldSimple w:instr="PAGE">
+      <w:r>
+        <w:rPr>
+          <w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/>
+          <w:sz w:val="18"/>
+          <w:color w:val="64748B"/>
+        </w:rPr>
+        <w:t>1</w:t>
+      </w:r>
+    </w:fldSimple>
     <w:r>
       <w:rPr>
         <w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/>
@@ -117,14 +119,16 @@ fn generate_header_xml(doc: &Document) -> String {
       </w:rPr>
       <w:t xml:space="preserve"> of </w:t>
     </w:r>
-    <w:r>
-      <w:rPr>
-        <w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/>
-        <w:sz w:val="18"/>
-        <w:color w:val="64748B"/>
-      </w:rPr>
-      <w:fldSimple w:instr="NUMPAGES"/>
-    </w:r>
+    <w:fldSimple w:instr="NUMPAGES">
+      <w:r>
+        <w:rPr>
+          <w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/>
+          <w:sz w:val="18"/>
+          <w:color w:val="64748B"/>
+        </w:rPr>
+        <w:t>1</w:t>
+      </w:r>
+    </w:fldSimple>
   </w:p>
 </w:hdr>"#,
         escape_xml(&left_text)
@@ -375,6 +379,32 @@ fn emit_heading(el: &ElementNode, style: &str, out: &mut String) {
     out.push_str("</w:p>\n");
 }
 
+fn normalize_inline_whitespace(text: &str, is_first: bool, is_last: bool) -> String {
+    let mut result = String::new();
+    let mut in_whitespace = false;
+
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            if !in_whitespace {
+                result.push(' ');
+                in_whitespace = true;
+            }
+        } else {
+            result.push(ch);
+            in_whitespace = false;
+        }
+    }
+
+    if is_first {
+        result = result.trim_start().to_string();
+    }
+    if is_last {
+        result = result.trim_end().to_string();
+    }
+
+    result
+}
+
 fn emit_inline_runs(
     el: &ElementNode,
     mut bold: bool,
@@ -406,9 +436,17 @@ fn emit_inline_runs(
         return;
     }
 
-    for child in &el.children {
+    let num_children = el.children.len();
+    for (idx, child) in el.children.iter().enumerate() {
+        let is_first = idx == 0;
+        let is_last = idx == num_children - 1;
+
         match child {
             Node::Text(t) => {
+                let norm = normalize_inline_whitespace(&t.content, is_first, is_last);
+                if norm.is_empty() {
+                    continue;
+                }
                 out.push_str("<w:r>");
                 let mut rpr = String::new();
                 if bold {
@@ -434,7 +472,7 @@ fn emit_inline_runs(
                 if !rpr.is_empty() {
                     out.push_str(&format!("<w:rPr>{}</w:rPr>", rpr));
                 }
-                out.push_str(&format!("<w:t xml:space=\"preserve\">{}</w:t></w:r>", escape_xml(&t.content)));
+                out.push_str(&format!("<w:t xml:space=\"preserve\">{}</w:t></w:r>", escape_xml(&norm)));
             }
             Node::Element(sub_el) => {
                 emit_inline_runs(sub_el, bold, italic, underline, code, sup, sub, mark, out);
@@ -462,39 +500,86 @@ fn emit_grid(el: &ElementNode, out: &mut String) {
     }
 
     let n = col_divs.len();
-    let col_pct = (5000 / n).max(500);
+    let gap_pct = if n > 1 { 200 } else { 0 };
+    let total_gap = (n - 1) * gap_pct;
+    let col_pct = ((5000 - total_gap) / n).max(500);
 
     out.push_str("<w:tbl>\n");
     out.push_str(
         r#"  <w:tblPr>
     <w:tblW w:w="5000" w:type="pct"/>
     <w:tblBorders>
-      <w:top w:val="none"/>
-      <w:left w:val="none"/>
-      <w:bottom w:val="none"/>
-      <w:right w:val="none"/>
-      <w:insideH w:val="none"/>
-      <w:insideV w:val="none"/>
+      <w:top w:val="nil"/>
+      <w:left w:val="nil"/>
+      <w:bottom w:val="nil"/>
+      <w:right w:val="nil"/>
+      <w:insideH w:val="nil"/>
+      <w:insideV w:val="nil"/>
     </w:tblBorders>
   </w:tblPr>
   <w:tr>
 "#,
     );
 
-    for col in col_divs {
-        out.push_str(&format!(
-            r#"    <w:tc>
+    for (i, col) in col_divs.iter().enumerate() {
+        if i > 0 && gap_pct > 0 {
+            // Spacer column
+            out.push_str(&format!(
+                r#"    <w:tc>
       <w:tcPr>
         <w:tcW w:w="{}" w:type="pct"/>
+        <w:tcBorders>
+          <w:top w:val="nil"/>
+          <w:left w:val="nil"/>
+          <w:bottom w:val="nil"/>
+          <w:right w:val="nil"/>
+        </w:tcBorders>
+      </w:tcPr>
+      <w:p/>
+    </w:tc>
+"#,
+                gap_pct
+            ));
+        }
+
+        let is_boxed = col.classes.iter().any(|c| c == "col-box");
+        let box_styling = if is_boxed {
+            r#"        <w:tcBorders>
+          <w:top w:val="single" w:sz="6" w:space="0" w:color="E2E8F0"/>
+          <w:left w:val="single" w:sz="6" w:space="0" w:color="E2E8F0"/>
+          <w:bottom w:val="single" w:sz="6" w:space="0" w:color="E2E8F0"/>
+          <w:right w:val="single" w:sz="6" w:space="0" w:color="E2E8F0"/>
+        </w:tcBorders>
+        <w:shd w:val="clear" w:color="auto" w:fill="F8FAFC"/>
+        <w:tcMar>
+          <w:top w:w="180" w:type="dxa"/>
+          <w:left w:w="220" w:type="dxa"/>
+          <w:bottom w:w="180" w:type="dxa"/>
+          <w:right w:w="220" w:type="dxa"/>
+        </w:tcMar>"#
+        } else {
+            r#"        <w:tcBorders>
+          <w:top w:val="nil"/>
+          <w:left w:val="nil"/>
+          <w:bottom w:val="nil"/>
+          <w:right w:val="nil"/>
+        </w:tcBorders>
         <w:tcMar>
           <w:top w:w="120" w:type="dxa"/>
           <w:left w:w="120" w:type="dxa"/>
           <w:bottom w:w="120" w:type="dxa"/>
           <w:right w:w="120" w:type="dxa"/>
-        </w:tcMar>
+        </w:tcMar>"#
+        };
+
+        out.push_str(&format!(
+            r#"    <w:tc>
+      <w:tcPr>
+        <w:tcW w:w="{}" w:type="pct"/>
+{}
       </w:tcPr>
 "#,
-            col_pct
+            col_pct, box_styling
         ));
 
         for child in &col.children {

@@ -16,7 +16,8 @@ import {
   Download,
   Upload,
   CheckCircle2,
-  AlertTriangle
+  AlertTriangle,
+  Printer,
 } from 'lucide-react';
 import { parseDdlClient } from './parserClient';
 import { DocumentRenderer } from './DocumentRenderer';
@@ -320,7 +321,7 @@ export function App() {
       ) : (
         <>
           {/* Top Navbar */}
-          <header style={{
+          <header className="no-print" style={{
             height: '48px',
             borderBottom: '1px solid #1e293b',
             display: 'flex',
@@ -427,27 +428,50 @@ export function App() {
                 <Upload size={13} /> {isImporting ? 'Importing...' : 'Import DOCX/PDF'}
               </button>
 
-              {/* Export PDF Button */}
-              <button
-                onClick={() => handleExport('pdf')}
-                disabled={isExporting}
-                title="Export via Rust Engine to PDF"
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  background: '#1e293b',
-                  color: '#34d399',
-                  border: '1px solid #065f46',
-                  padding: '6px 12px',
-                  borderRadius: '6px',
-                  fontSize: '12px',
-                  fontWeight: 600,
-                  cursor: isExporting ? 'not-allowed' : 'pointer',
-                }}
-              >
-                <Download size={13} /> PDF
-              </button>
+              {/* Export PDF Button (Vector Print + Engine Download) */}
+              <div style={{ display: 'flex', alignItems: 'center' }}>
+                <button
+                  onClick={() => window.print()}
+                  title="Export High-Fidelity Vector PDF (Matches live preview 100%)"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    background: '#065f46',
+                    color: '#34d399',
+                    border: '1px solid #059669',
+                    padding: '6px 12px',
+                    borderRadius: '6px 0 0 6px',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    transition: 'background 0.15s ease',
+                  }}
+                >
+                  <Printer size={13} /> Vector PDF
+                </button>
+                <button
+                  onClick={() => handleExport('pdf')}
+                  disabled={isExporting}
+                  title="Download PDF compiled directly by Rust ddl-engine"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    background: '#1e293b',
+                    color: '#34d399',
+                    border: '1px solid #065f46',
+                    borderLeft: 'none',
+                    padding: '6px 8px',
+                    borderRadius: '0 6px 6px 0',
+                    fontSize: '11px',
+                    fontWeight: 600,
+                    cursor: isExporting ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  <Download size={12} /> Engine
+                </button>
+              </div>
 
               {/* Export DOCX Button */}
               <button
@@ -517,7 +541,7 @@ export function App() {
           {/* Split Workspace */}
           <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
             {/* Left Pane: Multi-File Tab Bar & Monaco Editor */}
-            <div style={{ width: '48%', borderRight: '1px solid #1e293b', display: 'flex', flexDirection: 'column', background: '#1e1e1e' }}>
+            <div className="editor-pane no-print" style={{ width: '48%', borderRight: '1px solid #1e293b', display: 'flex', flexDirection: 'column', background: '#1e1e1e' }}>
               {/* File Tabs Header */}
               <div style={{
                 height: '38px',
@@ -632,8 +656,8 @@ export function App() {
             </div>
 
             {/* Right Pane: Live Paged Document Preview */}
-            <div style={{ width: '52%', display: 'flex', flexDirection: 'column', background: '#334155' }}>
-              <div style={{
+            <div className="preview-pane" style={{ width: '52%', display: 'flex', flexDirection: 'column', background: '#334155' }}>
+              <div className="preview-toolbar no-print" style={{
                 height: '38px',
                 padding: '0 16px',
                 background: '#1e293b',
@@ -657,6 +681,7 @@ export function App() {
               {/* Virtual Paper Sheet Scroll Area */}
               <div
                 ref={previewContainerRef}
+                className="preview-container"
                 style={{
                   flex: 1,
                   minHeight: 0,
@@ -666,7 +691,7 @@ export function App() {
                   justifyContent: 'center',
                 }}
               >
-                <div style={{
+                <div className="zoom-wrapper" style={{
                   transform: `scale(${zoom})`,
                   transformOrigin: 'top center',
                   transition: 'transform 0.08s ease-out',

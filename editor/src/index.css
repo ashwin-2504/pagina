@@ -35,3 +35,84 @@ html, body, #root {
   text-align: left;
   margin: 0;
 }
+
+/* High-Fidelity Vector PDF Printing */
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 0;
+  }
+
+  html, body, #root {
+    width: 100% !important;
+    height: auto !important;
+    min-height: 100% !important;
+    overflow: visible !important;
+    background: #ffffff !important;
+    color: #1e293b !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  /* Hide everything except document paper */
+  header,
+  .no-print,
+  [data-no-print],
+  .editor-pane,
+  .preview-toolbar,
+  button,
+  input,
+  nav,
+  aside,
+  .monaco-editor,
+  .cm-editor {
+    display: none !important;
+  }
+
+  /* Unconstrain preview containers */
+  .preview-pane,
+  .preview-container,
+  div[style*="overflow: auto"],
+  div[style*="overflow-y: auto"],
+  div[style*="width: 52%"],
+  div[style*="width: 48%"] {
+    display: block !important;
+    width: 100% !important;
+    height: auto !important;
+    min-height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+    background: transparent !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    box-shadow: none !important;
+    border: none !important;
+  }
+
+  /* Reset zoom transform when printing so scale is exactly 100% */
+  .zoom-wrapper,
+  div[style*="transform: scale"] {
+    transform: none !important;
+    margin: 0 auto !important;
+    padding: 0 !important;
+    width: 100% !important;
+  }
+
+  /* Render paper pages at exact dimensions with forced vector quality and color */
+  .ddl-paper {
+    width: 210mm !important;
+    min-height: 297mm !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    margin: 0 auto !important;
+    page-break-after: always !important;
+    break-after: page !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  .ddl-paper:last-child {
+    page-break-after: auto !important;
+    break-after: auto !important;
+  }
+}

@@ -11,13 +11,24 @@ struct StyledRun {
     code: bool,
 }
 
-struct WordToken<'a> {
-    text: &'a str,
-    font: &'a IndirectFontRef,
+#[derive(Debug, Clone)]
+struct ParagraphWord {
+    text: String,
+    bold: bool,
+    italic: bool,
+    code: bool,
+    has_trailing_space: bool,
+    width_mm: f32,
+}
+
+#[derive(Debug, Clone)]
+struct LineSpan {
+    text: String,
+    bold: bool,
+    italic: bool,
+    code: bool,
     font_size: f32,
     width_mm: f32,
-    is_space: bool,
-    is_newline: bool,
 }
 
 pub fn export_pdf(doc: &Document) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
@@ -620,6 +631,67 @@ fn render_doc_nodes(
     }
 }
 
+fn char_width_helvetica(ch: char) -> f32 {
+    let w = match ch {
+        ' ' => 278.0,
+        '!' | ',' | '.' | ':' | ';' | 'i' | 'l' | '\'' | '`' => 278.0,
+        'j' | 'r' | 't' | 'f' | '-' | '(' | ')' | '[' | ']' => 333.0,
+        'a' | 'b' | 'c' | 'd' | 'e' | 'g' | 'h' | 'k' | 'n' | 'o' | 'p' | 'q' | 'u' | 'v' | 'x' | 'y' | 'z' | '0'..='9' => 556.0,
+        's' => 500.0,
+        'w' => 722.0,
+        'm' => 833.0,
+        'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'K' | 'N' | 'O' | 'P' | 'Q' | 'R' | 'T' | 'U' | 'V' | 'X' | 'Y' | 'Z' => 667.0,
+        'I' => 278.0,
+        'J' => 500.0,
+        'L' => 556.0,
+        'M' | 'W' => 833.0,
+        _ => 556.0,
+    };
+    w / 1000.0
+}
+
+fn measure_text(text: &str, font_size: f32, is_code: bool) -> f32 {
+    let pt_to_mm = 0.352778;
+    if is_code {
+        (text.chars().count() as f32) * 0.60 * font_size * pt_to_mm
+    } else {
+        let em_sum: f32 = text.chars().map(char_width_helvetica).sum();
+        em_sum * font_size * pt_to_mm
+    }
+}
+
+fn estimate_nodes_height(nodes: &[Node], width: f32) -> f32 {
+    let mut h = 0.0f32;
+    for node in nodes {
+        match node {
+            Node::Element(el) => {
+                let tag = el.tag.to_lowercase();
+                match tag.as_str() {
+                    "h1" => h += 14.0,
+                    "h2" => h += 10.0,
+                    "h3" => h += 8.0,
+                    "p" => {
+                        let text = extract_plain_text(el);
+                        let chars = text.chars().count();
+                        let est_lines = ((chars as f32 * 2.0) / width).ceil().max(1.0);
+                        h += est_lines * 5.0 + 4.0;
+                    }
+                    _ => h += estimate_nodes_height(&el.children, width),
+                }
+            }
+            Node::Text(t) => {
+                let chars = t.content.trim().chars().count();
+                if chars > 0 {
+                    let est_lines = ((chars as f32 * 2.0) / width).ceil().max(1.0);
+                    h += est_lines * 5.0;
+                }
+            }
+            _ => {}
+        }
+    }
+    h
+}
+
 fn render_grid(
     el: &ElementNode,
     pdf_doc: &PdfDocumentReference,
@@ -661,49 +733,45 @@ fn render_grid(
     let col_width = (content_width - total_gap) / (n as f32);
 
     let start_y = *cursor_y;
-    let mut lowest_y = *cursor_y;
+    let inner_padding = 4.0f32;
 
-    // First pass to determine column heights if boxed
-    let mut col_end_ys: Vec<f32> = Vec::new();
-    for (i, col_el) in col_divs.iter().enumerate() {
-        let col_left = left_margin + (i as f32) * (col_width + gap_mm);
-        let is_boxed = col_el.classes.iter().any(|c| c == "col-box");
-        let inner_padding = if is_boxed { 4.0 } else { 0.0 };
-        let mut col_cursor = start_y - inner_padding;
+    // Estimate maximum height across columns
+    let max_col_height = col_divs
+        .iter()
+        .map(|c| estimate_nodes_height(&c.children, col_width - (inner_padding * 2.0)))
+        .fold(0.0f32, f32::max)
+        .max(22.0)
+        + (inner_padding * 2.0);
 
-        render_doc_nodes(
-            &col_el.children,
-            pdf_doc,
-            current_page,
+    let uniform_bottom = start_y - max_col_height;
+
+    // Check page overflow
+    if uniform_bottom < bottom_margin {
+        *page_count += 1;
+        let (new_page, new_layer) = pdf_doc.add_page(Mm(width_mm), Mm(height_mm), "Content");
+        *current_page = new_page;
+        *current_layer = pdf_doc.get_page(new_page).get_layer(new_layer);
+        draw_running_header_footer(
             current_layer,
-            page_count,
-            &mut col_cursor,
-            col_left + inner_padding,
-            col_width - (inner_padding * 2.0),
-            height_mm,
-            top_margin,
-            bottom_margin,
+            *page_count,
+            left_margin,
+            content_width,
             width_mm,
+            height_mm,
             font_reg,
-            font_bold,
-            font_italic,
-            font_code,
             doc,
         );
-
-        col_end_ys.push(col_cursor - inner_padding);
-        if col_cursor - inner_padding < lowest_y {
-            lowest_y = col_cursor - inner_padding;
-        }
+        *cursor_y = height_mm - top_margin;
     }
 
-    // Draw box backgrounds & borders around cards
-    let uniform_bottom = lowest_y;
+    let actual_start_y = *cursor_y;
+    let actual_uniform_bottom = actual_start_y - max_col_height;
+
+    // Draw card background & border ONCE
     for (i, col_el) in col_divs.iter().enumerate() {
         let is_boxed = col_el.classes.iter().any(|c| c == "col-box");
         if is_boxed {
             let col_left = left_margin + (i as f32) * (col_width + gap_mm);
-            // Draw background rectangle #F8FAFC and border #E2E8F0
             current_layer.set_fill_color(Color::Rgb(Rgb::new(
                 248.0 / 255.0,
                 250.0 / 255.0,
@@ -720,46 +788,44 @@ fn render_grid(
 
             let mut card_rect = Rect::new(
                 Mm(col_left),
-                Mm(uniform_bottom),
+                Mm(actual_uniform_bottom),
                 Mm(col_left + col_width),
-                Mm(start_y + 1.0),
+                Mm(actual_start_y),
             );
             card_rect.mode = PaintMode::FillStroke;
             current_layer.add_rect(card_rect);
         }
     }
 
-    // Re-render text cleanly over the background cards if boxed
+    // Render text inside cards ONCE
     for (i, col_el) in col_divs.iter().enumerate() {
         let is_boxed = col_el.classes.iter().any(|c| c == "col-box");
-        if is_boxed {
-            let col_left = left_margin + (i as f32) * (col_width + gap_mm);
-            let inner_padding = 4.0;
-            let mut col_cursor = start_y - inner_padding;
+        let col_left = left_margin + (i as f32) * (col_width + gap_mm);
+        let pad = if is_boxed { inner_padding } else { 0.0 };
+        let mut col_cursor = actual_start_y - pad - 1.5;
 
-            render_doc_nodes(
-                &col_el.children,
-                pdf_doc,
-                current_page,
-                current_layer,
-                page_count,
-                &mut col_cursor,
-                col_left + inner_padding,
-                col_width - (inner_padding * 2.0),
-                height_mm,
-                top_margin,
-                bottom_margin,
-                width_mm,
-                font_reg,
-                font_bold,
-                font_italic,
-                font_code,
-                doc,
-            );
-        }
+        render_doc_nodes(
+            &col_el.children,
+            pdf_doc,
+            current_page,
+            current_layer,
+            page_count,
+            &mut col_cursor,
+            col_left + pad,
+            col_width - (pad * 2.0),
+            height_mm,
+            top_margin,
+            bottom_margin,
+            width_mm,
+            font_reg,
+            font_bold,
+            font_italic,
+            font_code,
+            doc,
+        );
     }
 
-    *cursor_y = uniform_bottom - 5.0;
+    *cursor_y = actual_uniform_bottom - 6.0;
 }
 
 fn render_heading(
@@ -887,140 +953,182 @@ fn render_styled_paragraph(
         return;
     }
 
-    // Tokenize into words and single-space separators
-    let mut tokens: Vec<WordToken> = Vec::new();
+    // Tokenize into words with exact font metrics
+    let mut words: Vec<ParagraphWord> = Vec::new();
+    let space_w = measure_text(" ", font_size, false);
 
     for run in &cleaned_runs {
-        let font = if run.code {
-            font_code
-        } else if run.bold {
-            font_bold
-        } else if run.italic {
-            font_italic
-        } else {
-            font_reg
-        };
+        let is_code = run.code;
+        let mut cur_word = String::new();
+        let chars: Vec<char> = run.text.chars().collect();
+        let n = chars.len();
+        let mut i = 0;
 
-        let width_factor = if run.code { 0.20 } else { 0.19 };
-
-        let mut current_word = String::new();
-        let mut last_was_whitespace = false;
-
-        for ch in run.text.chars() {
+        while i < n {
+            let ch = chars[i];
             if ch == '\n' {
-                if !current_word.is_empty() {
-                    let w = (current_word.len() as f32) * font_size * width_factor;
-                    let static_str = Box::leak(current_word.into_boxed_str());
-                    tokens.push(WordToken {
-                        text: static_str,
-                        font,
-                        font_size,
+                if !cur_word.is_empty() {
+                    let w = measure_text(&cur_word, font_size, is_code);
+                    words.push(ParagraphWord {
+                        text: cur_word,
+                        bold: run.bold,
+                        italic: run.italic,
+                        code: run.code,
+                        has_trailing_space: false,
                         width_mm: w,
-                        is_space: false,
-                        is_newline: false,
                     });
-                    current_word = String::new();
+                    cur_word = String::new();
                 }
-                tokens.push(WordToken {
-                    text: "",
-                    font,
-                    font_size,
+                words.push(ParagraphWord {
+                    text: "\n".to_string(),
+                    bold: run.bold,
+                    italic: run.italic,
+                    code: run.code,
+                    has_trailing_space: false,
                     width_mm: 0.0,
-                    is_space: false,
-                    is_newline: true,
                 });
-                last_was_whitespace = true;
+                i += 1;
             } else if ch.is_whitespace() {
-                if !current_word.is_empty() {
-                    let w = (current_word.len() as f32) * font_size * width_factor;
-                    let static_str = Box::leak(current_word.into_boxed_str());
-                    tokens.push(WordToken {
-                        text: static_str,
-                        font,
-                        font_size,
+                if !cur_word.is_empty() {
+                    let w = measure_text(&cur_word, font_size, is_code);
+                    words.push(ParagraphWord {
+                        text: cur_word,
+                        bold: run.bold,
+                        italic: run.italic,
+                        code: run.code,
+                        has_trailing_space: true,
                         width_mm: w,
-                        is_space: false,
-                        is_newline: false,
                     });
-                    current_word = String::new();
+                    cur_word = String::new();
+                } else if let Some(last) = words.last_mut() {
+                    last.has_trailing_space = true;
                 }
-                if !last_was_whitespace {
-                    tokens.push(WordToken {
-                        text: " ",
-                        font,
-                        font_size,
-                        width_mm: font_size * 0.10,
-                        is_space: true,
-                        is_newline: false,
-                    });
-                    last_was_whitespace = true;
+                while i < n && chars[i].is_whitespace() && chars[i] != '\n' {
+                    i += 1;
                 }
             } else {
-                current_word.push(ch);
-                last_was_whitespace = false;
+                cur_word.push(ch);
+                i += 1;
             }
         }
 
-        if !current_word.is_empty() {
-            let w = (current_word.len() as f32) * font_size * width_factor;
-            let static_str = Box::leak(current_word.into_boxed_str());
-            tokens.push(WordToken {
-                text: static_str,
-                font,
-                font_size,
+        if !cur_word.is_empty() {
+            let w = measure_text(&cur_word, font_size, is_code);
+            words.push(ParagraphWord {
+                text: cur_word,
+                bold: run.bold,
+                italic: run.italic,
+                code: run.code,
+                has_trailing_space: false,
                 width_mm: w,
-                is_space: false,
-                is_newline: false,
             });
         }
     }
 
-    if tokens.is_empty() {
+    if words.is_empty() {
         return;
     }
 
-    // Measure line wrap lines first
-    let mut wrapped_lines: Vec<Vec<&WordToken>> = Vec::new();
-    let mut current_line: Vec<&WordToken> = Vec::new();
-    let mut current_line_width = 0.0f32;
+    // Wrap words into lines
+    let mut lines: Vec<Vec<ParagraphWord>> = Vec::new();
+    let mut cur_line: Vec<ParagraphWord> = Vec::new();
+    let mut cur_line_width = 0.0f32;
 
-    for token in &tokens {
-        if token.is_newline {
-            wrapped_lines.push(current_line.clone());
-            current_line.clear();
-            current_line_width = 0.0;
+    for word in words {
+        if word.text == "\n" {
+            lines.push(cur_line);
+            cur_line = Vec::new();
+            cur_line_width = 0.0;
             continue;
         }
 
-        if token.is_space && current_line.is_empty() {
-            continue; // Never start a line with leading space
+        let needed = word.width_mm + if word.has_trailing_space { space_w } else { 0.0 };
+        if !cur_line.is_empty() && cur_line_width + word.width_mm > actual_width {
+            lines.push(cur_line);
+            cur_line = Vec::new();
+            cur_line_width = 0.0;
         }
 
-        if current_line_width + token.width_mm > actual_width && !current_line.is_empty() {
-            wrapped_lines.push(current_line.clone());
-            current_line.clear();
-            current_line_width = 0.0;
+        cur_line_width += needed;
+        cur_line.push(word);
+    }
 
-            if token.is_space {
-                continue;
+    if !cur_line.is_empty() {
+        lines.push(cur_line);
+    }
+
+    // Combine contiguous words with the same style into spans for natural text kerning
+    let mut rendered_lines: Vec<(Vec<LineSpan>, f32)> = Vec::new();
+
+    for line_words in lines {
+        if line_words.is_empty() {
+            continue;
+        }
+
+        let mut spans: Vec<LineSpan> = Vec::new();
+        let mut cur_span_text = String::new();
+        let mut cur_bold = false;
+        let mut cur_italic = false;
+        let mut cur_code = false;
+        let num_words = line_words.len();
+
+        for (idx, w) in line_words.iter().enumerate() {
+            let is_last_word = idx == num_words - 1;
+            let style_matches = !cur_span_text.is_empty()
+                && cur_bold == w.bold
+                && cur_italic == w.italic
+                && cur_code == w.code;
+
+            if style_matches {
+                cur_span_text.push_str(&w.text);
+                if w.has_trailing_space && !is_last_word {
+                    cur_span_text.push(' ');
+                }
+            } else {
+                if !cur_span_text.is_empty() {
+                    let span_w = measure_text(&cur_span_text, font_size, cur_code);
+                    spans.push(LineSpan {
+                        text: cur_span_text,
+                        bold: cur_bold,
+                        italic: cur_italic,
+                        code: cur_code,
+                        font_size,
+                        width_mm: span_w,
+                    });
+                }
+                cur_span_text = w.text.clone();
+                if w.has_trailing_space && !is_last_word {
+                    cur_span_text.push(' ');
+                }
+                cur_bold = w.bold;
+                cur_italic = w.italic;
+                cur_code = w.code;
             }
         }
 
-        current_line.push(token);
-        current_line_width += token.width_mm;
+        if !cur_span_text.is_empty() {
+            let span_w = measure_text(&cur_span_text, font_size, cur_code);
+            spans.push(LineSpan {
+                text: cur_span_text,
+                bold: cur_bold,
+                italic: cur_italic,
+                code: cur_code,
+                font_size,
+                width_mm: span_w,
+            });
+        }
+
+        let total_line_w: f32 = spans.iter().map(|s| s.width_mm).sum();
+        rendered_lines.push((spans, total_line_w));
     }
 
-    if !current_line.is_empty() {
-        wrapped_lines.push(current_line);
-    }
-
-    if wrapped_lines.is_empty() {
+    if rendered_lines.is_empty() {
         return;
     }
 
-    let total_paragraph_height = (wrapped_lines.len() as f32) * line_height_mm;
+    let total_paragraph_height = (rendered_lines.len() as f32) * line_height_mm;
 
-    // Check page overflow before drawing callout box
+    // Check page overflow
     if *cursor_y - total_paragraph_height < bottom_margin {
         *page_count += 1;
         let (new_page, new_layer) = pdf_doc.add_page(Mm(width_mm), Mm(height_mm), "Content");
@@ -1039,12 +1147,11 @@ fn render_styled_paragraph(
         *cursor_y = height_mm - top_margin;
     }
 
-    // Draw Callout filled background (#F0FDF4) and left green bar (#16A34A)
+    // Draw Callout filled background (#F0FDF4) and left green accent bar (#16A34A)
     if is_callout {
         let callout_top_y = *cursor_y + 2.5;
         let callout_bottom_y = *cursor_y - total_paragraph_height - 1.5;
 
-        // Background rectangle
         current_layer.set_fill_color(Color::Rgb(Rgb::new(
             240.0 / 255.0,
             253.0 / 255.0,
@@ -1060,7 +1167,6 @@ fn render_styled_paragraph(
         bg_rect.mode = PaintMode::Fill;
         current_layer.add_rect(bg_rect);
 
-        // Left accent bar
         current_layer.set_fill_color(Color::Rgb(Rgb::new(
             22.0 / 255.0,
             163.0 / 255.0,
@@ -1070,32 +1176,15 @@ fn render_styled_paragraph(
         let mut bar_rect = Rect::new(
             Mm(left_margin),
             Mm(callout_bottom_y),
-            Mm(left_margin + 1.5),
+            Mm(left_margin + 1.8),
             Mm(callout_top_y),
         );
         bar_rect.mode = PaintMode::Fill;
         current_layer.add_rect(bar_rect);
     }
 
-    // Set text color
-    if let Some((r, g, b)) = color {
-        current_layer.set_fill_color(Color::Rgb(Rgb::new(r, g, b, None)));
-    } else {
-        current_layer.set_fill_color(Color::Rgb(Rgb::new(
-            15.0 / 255.0,
-            23.0 / 255.0,
-            42.0 / 255.0,
-            None,
-        )));
-    }
-
     // Render lines of text
-    for line in wrapped_lines {
-        let mut line_width = 0.0f32;
-        for tok in &line {
-            line_width += tok.width_mm;
-        }
-
+    for (spans, line_width) in rendered_lines {
         let mut x = actual_left;
         if align == Some("center") {
             x = (actual_left + (actual_width - line_width) / 2.0).max(actual_left);
@@ -1103,11 +1192,57 @@ fn render_styled_paragraph(
             x = (actual_left + actual_width - line_width).max(actual_left);
         }
 
-        for tok in line {
-            if !tok.is_space && !tok.text.is_empty() {
-                current_layer.use_text(tok.text, tok.font_size, Mm(x), Mm(*cursor_y), tok.font);
+        for span in &spans {
+            let font = if span.code {
+                font_code
+            } else if span.bold {
+                font_bold
+            } else if span.italic {
+                font_italic
+            } else {
+                font_reg
+            };
+
+            if span.code {
+                // Subtle code pill background
+                let pill_pad_x = 0.8;
+                let pill_pad_y = 0.4;
+                current_layer.set_fill_color(Color::Rgb(Rgb::new(
+                    241.0 / 255.0,
+                    245.0 / 255.0,
+                    249.0 / 255.0,
+                    None,
+                )));
+                let mut pill = Rect::new(
+                    Mm(x - pill_pad_x),
+                    Mm(*cursor_y - pill_pad_y),
+                    Mm(x + span.width_mm + pill_pad_x),
+                    Mm(*cursor_y + span.font_size * 0.35 + pill_pad_y),
+                );
+                pill.mode = PaintMode::Fill;
+                current_layer.add_rect(pill);
             }
-            x += tok.width_mm;
+
+            if span.code {
+                current_layer.set_fill_color(Color::Rgb(Rgb::new(
+                    15.0 / 255.0,
+                    23.0 / 255.0,
+                    42.0 / 255.0,
+                    None,
+                )));
+            } else if let Some((r, g, b)) = color {
+                current_layer.set_fill_color(Color::Rgb(Rgb::new(r, g, b, None)));
+            } else {
+                current_layer.set_fill_color(Color::Rgb(Rgb::new(
+                    15.0 / 255.0,
+                    23.0 / 255.0,
+                    42.0 / 255.0,
+                    None,
+                )));
+            }
+
+            current_layer.use_text(&span.text, span.font_size, Mm(x), Mm(*cursor_y), font);
+            x += span.width_mm;
         }
 
         *cursor_y -= line_height_mm;
