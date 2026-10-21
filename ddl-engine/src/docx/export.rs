@@ -1,4 +1,4 @@
-use crate::ast::{Document, ElementNode, Node};
+use crate::ast::{Document, ElementNode, Node, PageStyle};
 use std::io::{Cursor, Write};
 use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
@@ -25,13 +25,140 @@ pub fn export_docx(doc: &Document) -> Result<Vec<u8>, Box<dyn std::error::Error 
     zip.start_file("word/styles.xml", options)?;
     zip.write_all(STYLES_XML.as_bytes())?;
 
-    // 5. word/document.xml
+    // 5. word/header1.xml
+    zip.start_file("word/header1.xml", options)?;
+    let header_xml = generate_header_xml(doc);
+    zip.write_all(header_xml.as_bytes())?;
+
+    // 6. word/footer1.xml
+    zip.start_file("word/footer1.xml", options)?;
+    let footer_xml = generate_footer_xml(doc);
+    zip.write_all(footer_xml.as_bytes())?;
+
+    // 7. word/document.xml
     zip.start_file("word/document.xml", options)?;
     let doc_xml = generate_document_xml(doc);
     zip.write_all(doc_xml.as_bytes())?;
 
     let finished_cursor = zip.finish()?;
     Ok(finished_cursor.into_inner())
+}
+
+fn get_active_page_style(doc: &Document) -> Option<&PageStyle> {
+    if let Some(ps) = doc.props.page_styles.get("body") {
+        return Some(ps);
+    }
+    doc.props.page_styles.values().find(|ps| ps.is_default).or_else(|| {
+        doc.props.page_styles.values().next()
+    })
+}
+
+fn extract_nodes_plain_text(nodes: &[Node]) -> String {
+    let mut s = String::new();
+    for node in nodes {
+        match node {
+            Node::Text(t) => s.push_str(&t.content),
+            Node::Element(el) => s.push_str(&extract_nodes_plain_text(&el.children)),
+            _ => {}
+        }
+    }
+    s.trim().to_string()
+}
+
+fn generate_header_xml(doc: &Document) -> String {
+    let ps = get_active_page_style(doc);
+    let left_text = ps
+        .and_then(|p| p.running_header.as_ref())
+        .map(|h| extract_nodes_plain_text(&h.left))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            doc.props
+                .metadata
+                .get("title")
+                .cloned()
+                .unwrap_or_else(|| "Document".to_string())
+        });
+
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:p>
+    <w:pPr>
+      <w:pBdr>
+        <w:bottom w:val="single" w:sz="6" w:space="8" w:color="CBD5E1"/>
+      </w:pBdr>
+      <w:tabs>
+        <w:tab w:val="right" w:pos="9360"/>
+      </w:tabs>
+    </w:pPr>
+    <w:r>
+      <w:rPr>
+        <w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/>
+        <w:sz w:val="18"/>
+        <w:color w:val="64748B"/>
+      </w:rPr>
+      <w:t>{}</w:t>
+    </w:r>
+    <w:r><w:tab/></w:r>
+    <w:r>
+      <w:rPr>
+        <w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/>
+        <w:sz w:val="18"/>
+        <w:color w:val="64748B"/>
+      </w:rPr>
+      <w:fldSimple w:instr="PAGE"/>
+    </w:r>
+    <w:r>
+      <w:rPr>
+        <w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/>
+        <w:sz w:val="18"/>
+        <w:color w:val="64748B"/>
+      </w:rPr>
+      <w:t xml:space="preserve"> of </w:t>
+    </w:r>
+    <w:r>
+      <w:rPr>
+        <w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/>
+        <w:sz w:val="18"/>
+        <w:color w:val="64748B"/>
+      </w:rPr>
+      <w:fldSimple w:instr="NUMPAGES"/>
+    </w:r>
+  </w:p>
+</w:hdr>"#,
+        escape_xml(&left_text)
+    )
+}
+
+fn generate_footer_xml(doc: &Document) -> String {
+    let ps = get_active_page_style(doc);
+    let center_text = ps
+        .and_then(|p| p.running_footer.as_ref())
+        .map(|f| extract_nodes_plain_text(&f.center))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Pagina Typesetting System".to_string());
+
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:p>
+    <w:pPr>
+      <w:jc w:val="center"/>
+    </w:pPr>
+    <w:r>
+      <w:rPr>
+        <w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/>
+        <w:sz w:val="18"/>
+        <w:color w:val="64748B"/>
+      </w:rPr>
+      <w:t>{}</w:t>
+    </w:r>
+  </w:p>
+</w:ftr>"#,
+        escape_xml(&center_text)
+    )
 }
 
 fn generate_document_xml(doc: &Document) -> String {
@@ -62,6 +189,8 @@ fn generate_document_xml(doc: &Document) -> String {
   <w:body>
     {}
     <w:sectPr>
+      <w:headerReference w:type="default" r:id="rIdH1"/>
+      <w:footerReference w:type="default" r:id="rIdF1"/>
       <w:pgSz w:w="{}" w:h="{}"{}/>
       <w:pgMar w:top="{}" w:right="{}" w:bottom="{}" w:left="{}" w:header="720" w:footer="720"/>
     </w:sectPr>
@@ -100,6 +229,34 @@ fn get_p_align(el: &ElementNode) -> Option<&'static str> {
     None
 }
 
+fn is_inline_node(node: &Node) -> bool {
+    match node {
+        Node::Text(_) => true,
+        Node::Comment(_) => false,
+        Node::Section(_) => false,
+        Node::Element(el) => {
+            let tag = el.tag.to_lowercase();
+            matches!(
+                tag.as_str(),
+                "b" | "strong"
+                    | "i"
+                    | "em"
+                    | "u"
+                    | "code"
+                    | "span"
+                    | "a"
+                    | "mark"
+                    | "sup"
+                    | "sub"
+                    | "br"
+                    | "text"
+                    | "page-number"
+                    | "total-pages"
+            )
+        }
+    }
+}
+
 fn convert_node(node: &Node, out: &mut String) {
     match node {
         Node::Text(t) => {
@@ -119,6 +276,17 @@ fn convert_node(node: &Node, out: &mut String) {
         }
         Node::Element(el) => {
             let tag = el.tag.to_lowercase();
+            let is_callout = tag == "callout" || el.classes.iter().any(|c| c == "callout");
+
+            if is_callout {
+                out.push_str(
+                    "<w:p><w:pPr><w:pBdr><w:left w:val=\"single\" w:sz=\"24\" w:space=\"12\" w:color=\"16A34A\"/></w:pBdr><w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"F0FDF4\"/></w:pPr>",
+                );
+                emit_inline_runs(el, false, false, false, false, false, false, false, out);
+                out.push_str("</w:p>\n");
+                return;
+            }
+
             match tag.as_str() {
                 "h1" => emit_heading(el, "Heading1", out),
                 "h2" => emit_heading(el, "Heading2", out),
@@ -164,12 +332,8 @@ fn convert_node(node: &Node, out: &mut String) {
                 "table" => {
                     emit_table(el, out);
                 }
-                "callout" => {
-                    out.push_str(
-                        "<w:p><w:pPr><w:pBdr><w:left w:val=\"single\" w:sz=\"24\" w:space=\"12\" w:color=\"16A34A\"/></w:pBdr><w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"F0FDF4\"/></w:pPr>",
-                    );
-                    emit_inline_runs(el, false, false, false, false, false, false, false, out);
-                    out.push_str("</w:p>\n");
+                "grid" => {
+                    emit_grid(el, out);
                 }
                 "hr" => {
                     out.push_str(
@@ -177,9 +341,23 @@ fn convert_node(node: &Node, out: &mut String) {
                     );
                 }
                 _ => {
-                    // Container element like div, grid, etc.
-                    for child in &el.children {
-                        convert_node(child, out);
+                    // Container element like div, col-box, etc.
+                    // If all non-empty children are inline elements, render as a single cohesive paragraph!
+                    let has_only_inlines = el.children.iter().all(|c| match c {
+                        Node::Comment(_) => true,
+                        Node::Text(_) => true,
+                        Node::Element(sub) => is_inline_node(&Node::Element(sub.clone())),
+                        _ => false,
+                    });
+
+                    if has_only_inlines && !el.children.is_empty() {
+                        out.push_str("<w:p>");
+                        emit_inline_runs(el, false, false, false, false, false, false, false, out);
+                        out.push_str("</w:p>\n");
+                    } else {
+                        for child in &el.children {
+                            convert_node(child, out);
+                        }
                     }
                 }
             }
@@ -266,6 +444,69 @@ fn emit_inline_runs(
     }
 }
 
+fn emit_grid(el: &ElementNode, out: &mut String) {
+    let col_divs: Vec<&ElementNode> = el
+        .children
+        .iter()
+        .filter_map(|c| {
+            if let Node::Element(child_el) = c {
+                Some(child_el)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if col_divs.is_empty() {
+        return;
+    }
+
+    let n = col_divs.len();
+    let col_pct = (5000 / n).max(500);
+
+    out.push_str("<w:tbl>\n");
+    out.push_str(
+        r#"  <w:tblPr>
+    <w:tblW w:w="5000" w:type="pct"/>
+    <w:tblBorders>
+      <w:top w:val="none"/>
+      <w:left w:val="none"/>
+      <w:bottom w:val="none"/>
+      <w:right w:val="none"/>
+      <w:insideH w:val="none"/>
+      <w:insideV w:val="none"/>
+    </w:tblBorders>
+  </w:tblPr>
+  <w:tr>
+"#,
+    );
+
+    for col in col_divs {
+        out.push_str(&format!(
+            r#"    <w:tc>
+      <w:tcPr>
+        <w:tcW w:w="{}" w:type="pct"/>
+        <w:tcMar>
+          <w:top w:w="120" w:type="dxa"/>
+          <w:left w:w="120" w:type="dxa"/>
+          <w:bottom w:w="120" w:type="dxa"/>
+          <w:right w:w="120" w:type="dxa"/>
+        </w:tcMar>
+      </w:tcPr>
+"#,
+            col_pct
+        ));
+
+        for child in &col.children {
+            convert_node(child, out);
+        }
+
+        out.push_str("    </w:tc>\n");
+    }
+
+    out.push_str("  </w:tr>\n</w:tbl>\n");
+}
+
 fn emit_table(el: &ElementNode, out: &mut String) {
     out.push_str("<w:tbl>\n");
     out.push_str(r#"  <w:tblPr>
@@ -281,7 +522,6 @@ fn emit_table(el: &ElementNode, out: &mut String) {
   </w:tblPr>
 "#);
 
-    // Recursively collect rows
     let mut rows: Vec<&ElementNode> = Vec::new();
     collect_rows(el, &mut rows);
 
@@ -338,6 +578,8 @@ const CONTENT_TYPES_XML: &str = r#"<?xml version="1.0" encoding="UTF-8" standalo
   <Default Extension="xml" ContentType="application/xml"/>
   <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
   <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+  <Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>
+  <Override PartName="/word/footer1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/>
 </Types>"#;
 
 const RELS_XML: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -348,6 +590,8 @@ const RELS_XML: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?
 const WORD_RELS_XML: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+  <Relationship Id="rIdH1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>
+  <Relationship Id="rIdF1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>
 </Relationships>"#;
 
 const STYLES_XML: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>

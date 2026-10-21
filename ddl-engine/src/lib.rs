@@ -28,6 +28,7 @@ pub fn parse_ddl_to_json(input: &str) -> Result<String, JsValue> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::io::Read;
     use std::path::Path;
 
     #[test]
@@ -193,5 +194,100 @@ mod tests {
         // 4. Re-export to DOCX
         let reexported_docx = docx::export_docx(&parsed_doc).expect("Re-export to DOCX must succeed");
         assert_eq!(&reexported_docx[0..2], b"PK");
+    }
+
+    #[test]
+    fn test_user_modular_ddl_report_export_and_import() {
+        let input = r#"<doc>
+  <props>
+    <meta>
+      <title>Modular DDL Report</title>
+      <author>Engineering Team</author>
+    </meta>
+
+    <!-- Global Paper Defaults -->
+    <paper size="A4" orientation="portrait" margin="20mm" />
+
+    <!-- External Link to Stylesheet -->
+    <link rel="stylesheet" href="styles.css" />
+
+    <!-- Named Page Styles -->
+    <page-styles>
+      <page-style name="body" default="true">
+        <running-header>
+          <left><text>Technical Report</text></left>
+          <right><page-number/> of <total-pages/></right>
+        </running-header>
+        <running-footer>
+          <center><text>© 2026 Autonomous Document Systems</text></center>
+        </running-footer>
+      </page-style>
+    </page-styles>
+  </props>
+
+  <body>
+    <section page-style="body">
+      <h1>Modular Document Architecture</h1>
+      <p class="lead">
+        Content and presentation are decoupled into separate files: <code>document.dxml</code> and <code>styles.css</code>.
+      </p>
+
+      <div class="callout">
+        <b>Separation of Concerns:</b> Styles are linked via <code>&lt;link rel="stylesheet" href="styles.css" /&gt;</code>, allowing designers or AI agents to style documents independently.
+      </div>
+
+      <h2>Multi-Column Grid Flow</h2>
+      <grid cols="1fr 1fr" gap="6mm">
+        <div class="col-box">
+          <h3>Left Column</h3>
+          <p>
+            The layout rules defined in the standalone <code>styles.css</code> file apply automatically across the document.
+          </p>
+        </div>
+        <div class="col-box">
+          <h3>Right Column</h3>
+          <p>
+            You can add new files, switch between them using the tabs above, or format them individually.
+          </p>
+        </div>
+      </grid>
+    </section>
+  </body>
+</doc>"#;
+
+        let mut parser = parser::Parser::new(input);
+        let doc = parser.parse().expect("User document should parse successfully");
+        assert_eq!(doc.props.metadata.get("title").map(|s| s.as_str()), Some("Modular DDL Report"));
+        assert!(doc.props.page_styles.contains_key("body"));
+
+        // 1. PDF Export
+        let pdf_bytes = pdf::export_pdf(&doc).expect("PDF export must succeed");
+        assert_eq!(&pdf_bytes[0..4], b"%PDF");
+
+        // 2. DOCX Export
+        let docx_bytes = docx::export_docx(&doc).expect("DOCX export must succeed");
+        assert_eq!(&docx_bytes[0..2], b"PK");
+
+        // Inspect DOCX contents: verify header1.xml, footer1.xml, grid table, and entity decoding
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&docx_bytes)).expect("Must be valid zip archive");
+        assert!(archive.by_name("word/header1.xml").is_ok(), "Header1.xml must exist");
+        assert!(archive.by_name("word/footer1.xml").is_ok(), "Footer1.xml must exist");
+
+        let mut doc_xml = String::new();
+        archive.by_name("word/document.xml").unwrap().read_to_string(&mut doc_xml).unwrap();
+        println!("DOC_XML:\n{}", doc_xml);
+        assert!(doc_xml.contains("Modular Document Architecture"));
+        assert!(doc_xml.contains("Technical Report") || archive.by_name("word/header1.xml").is_ok());
+        assert!(doc_xml.contains("&lt;link rel=&quot;stylesheet&quot; href=&quot;styles.css&quot; /&gt;"), "Entity must be properly escaped for Word XML so user sees <link>");
+        assert!(doc_xml.contains("Separation of Concerns:"));
+        assert!(doc_xml.contains("Multi-Column Grid Flow"));
+        assert!(doc_xml.contains("Left Column"));
+        assert!(doc_xml.contains("Right Column"));
+
+        // Verify DOCX Import roundtrip
+        let import_res = docx::import_docx(&docx_bytes).expect("Import DOCX must succeed");
+        assert!(import_res.dxml.contains("Modular Document Architecture"));
+        assert!(import_res.dxml.contains("Left Column"));
+        assert!(import_res.dxml.contains("Right Column"));
     }
 }

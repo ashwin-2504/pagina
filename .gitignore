@@ -21,5 +21,7 @@ editor/src/pkg/
 Thumbs.db
 *.swp
 *.log
+.~lock.*
+*~
 .vscode/
 .idea/
