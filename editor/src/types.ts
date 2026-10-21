@@ -14,6 +14,8 @@ export interface PaperConfig {
   size: string;
   orientation: string;
   margin: UnitLength;
+  header_distance?: UnitLength;
+  footer_distance?: UnitLength;
 }
 
 export interface StyleRule {
@@ -64,12 +66,14 @@ export interface RunningHeaderFooter {
   left: DocNode[];
   center: DocNode[];
   right: DocNode[];
+  line?: number;
 }
 
 export interface WatermarkDef {
   text: string;
   opacity: number;
   angle_deg: number;
+  line?: number;
 }
 
 export interface PageStyle {
@@ -78,6 +82,7 @@ export interface PageStyle {
   running_header?: RunningHeaderFooter;
   running_footer?: RunningHeaderFooter;
   watermark?: WatermarkDef;
+  line?: number;
 }
 
 export interface DocumentProps {
@@ -86,6 +91,7 @@ export interface DocumentProps {
   stylesheet: Stylesheet;
   page_styles: Record<string, PageStyle>;
   default_page_style: string;
+  paper_line?: number;
 }
 
 export interface BodyNode {

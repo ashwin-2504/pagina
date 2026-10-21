@@ -53,6 +53,10 @@ pub struct PaperConfig {
     pub size: String,
     pub orientation: String,
     pub margin: Length,
+    /// Optional Word-compatible distances from the physical page edge to the
+    /// running header/footer. When omitted, exporters use a symmetric default.
+    pub header_distance: Option<Length>,
+    pub footer_distance: Option<Length>,
 }
 
 impl Default for PaperConfig {
@@ -64,6 +68,8 @@ impl Default for PaperConfig {
                 val: 20.0,
                 unit: Unit::Mm,
             },
+            header_distance: None,
+            footer_distance: None,
         }
     }
 }

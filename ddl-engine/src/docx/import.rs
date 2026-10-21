@@ -1367,6 +1367,8 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
     let mut paper_size = "A4".to_string();
     let mut paper_orientation = "portrait".to_string();
     let mut paper_margin_mm = 20.0f32;
+    let mut header_distance_mm: Option<f32> = None;
+    let mut footer_distance_mm: Option<f32> = None;
 
     // Table state
     let mut in_tbl = false;
@@ -1851,13 +1853,19 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
                     }
                     b"w:pgMar" => {
                         for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"w:top" {
-                                if let Ok(m_str) = std::str::from_utf8(&attr.value) {
-                                    if let Ok(m_val) = m_str.parse::<f32>() {
-                                        let mm = (m_val * 0.0176389).round();
-                                        if (10.0..=35.0).contains(&mm) {
-                                            paper_margin_mm = mm;
+                            if let Ok(m_str) = std::str::from_utf8(&attr.value) {
+                                if let Ok(m_val) = m_str.parse::<f32>() {
+                                    let mm = m_val * 25.4 / 1440.0;
+                                    match attr.key.as_ref() {
+                                        b"w:top" => {
+                                            let rounded = mm.round();
+                                            if (10.0..=35.0).contains(&rounded) {
+                                                paper_margin_mm = rounded;
+                                            }
                                         }
+                                        b"w:header" if mm >= 0.0 => header_distance_mm = Some(mm),
+                                        b"w:footer" if mm >= 0.0 => footer_distance_mm = Some(mm),
+                                        _ => {}
                                     }
                                 }
                             }
@@ -2280,6 +2288,13 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
             .to_string()
     };
 
+    let header_distance_attr = header_distance_mm
+        .map(|distance| format!(" header-distance=\"{:.2}mm\"", distance))
+        .unwrap_or_default();
+    let footer_distance_attr = footer_distance_mm
+        .map(|distance| format!(" footer-distance=\"{:.2}mm\"", distance))
+        .unwrap_or_default();
+
     let dxml = format!(
         r#"<doc>
   <props>
@@ -2287,7 +2302,7 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
       <title>Imported OpenXML Document</title>
       <author>Pagina Reverse-Engineering Engine</author>
     </meta>
-    <paper size="{}" orientation="{}" margin="{}mm" />
+    <paper size="{}" orientation="{}" margin="{}mm"{}{} />
     <link rel="stylesheet" href="styles.dcss" />
 {}
   </props>
@@ -2301,6 +2316,8 @@ pub fn import_docx(bytes: &[u8]) -> Result<ImportResult, Box<dyn std::error::Err
         paper_size,
         paper_orientation,
         paper_margin_mm,
+        header_distance_attr,
+        footer_distance_attr,
         page_styles_block,
         if body_nodes.is_empty() {
             "      <p>Empty document</p>".to_string()

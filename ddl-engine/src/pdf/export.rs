@@ -1,4 +1,4 @@
-use crate::ast::{Document, ElementNode, Node, PageStyle};
+use crate::ast::{Document, ElementNode, Length, Node, PageStyle, Unit};
 use base64::Engine;
 use printpdf::path::{PaintMode, WindingOrder};
 use printpdf::*;
@@ -121,14 +121,21 @@ pub fn export_pdf(doc: &Document) -> Result<Vec<u8>, Box<dyn std::error::Error +
     let mut page_count = 1;
 
     // Dynamic margins from document props
-    let margin_mm = doc.props.paper.margin.val;
+    let margin_mm = length_to_mm(&doc.props.paper.margin);
     let left_margin = margin_mm.max(12.0);
     let right_margin = margin_mm.max(12.0);
     let content_width = width_mm - left_margin - right_margin;
     let (header_clearance, footer_clearance) =
         get_header_and_footer_heights(doc, width_mm, content_width);
-    let top_margin = (margin_mm * 1.1).max(22.0).max(header_clearance);
-    let bottom_margin = (margin_mm * 1.0).max(18.0).max(footer_clearance);
+    let default_running_distance = (margin_mm / 2.0).min(12.7).max(5.0);
+    let header_distance = doc.props.paper.header_distance.as_ref()
+        .map(length_to_mm)
+        .unwrap_or(default_running_distance);
+    let footer_distance = doc.props.paper.footer_distance.as_ref()
+        .map(length_to_mm)
+        .unwrap_or(default_running_distance);
+    let top_margin = margin_mm.max(header_distance + header_clearance).max(18.0);
+    let bottom_margin = margin_mm.max(footer_distance + footer_clearance).max(18.0);
 
     // Draw header and footer on page 1
     draw_running_header_footer(
@@ -177,6 +184,18 @@ fn get_active_page_style(doc: &Document) -> Option<&PageStyle> {
         .values()
         .find(|ps| ps.is_default)
         .or_else(|| doc.props.page_styles.values().next())
+}
+
+fn length_to_mm(length: &Length) -> f32 {
+    match length.unit {
+        Unit::Mm => length.val,
+        Unit::Cm => length.val * 10.0,
+        Unit::Inch => length.val * 25.4,
+        Unit::Pt => length.val * 25.4 / 72.0,
+        Unit::Px => length.val * 25.4 / 96.0,
+        Unit::Em => length.val * 25.4 / 6.0,
+        Unit::Percent => 0.0,
+    }
 }
 
 fn extract_nodes_text(nodes: &[Node]) -> String {
@@ -351,6 +370,14 @@ fn draw_running_header_footer(
     doc: &Document,
 ) {
     let ps = get_active_page_style(doc);
+    let margin_mm = length_to_mm(&doc.props.paper.margin);
+    let default_running_distance = (margin_mm / 2.0).min(12.7).max(5.0);
+    let header_distance = doc.props.paper.header_distance.as_ref()
+        .map(length_to_mm)
+        .unwrap_or(default_running_distance);
+    let footer_distance = doc.props.paper.footer_distance.as_ref()
+        .map(length_to_mm)
+        .unwrap_or(default_running_distance);
 
     // 1. Check if running header contains an image
     let header_img_opt = ps.and_then(|p| p.running_header.as_ref()).and_then(|h| {
@@ -400,7 +427,7 @@ fn draw_running_header_footer(
                     None,
                 )));
 
-                let header_y = height_mm - 11.5;
+                let header_y = height_mm - header_distance;
                 if !left_text.is_empty() {
                     layer.use_text(&left_text, 8.5, Mm(left_margin), Mm(header_y), font_reg);
                 }
@@ -416,7 +443,7 @@ fn draw_running_header_footer(
                     layer.use_text(&display_right, 8.5, Mm(right_x), Mm(header_y), font_reg);
                 }
 
-                let rule_y = height_mm - 14.0;
+                let rule_y = (header_y - 2.5).max(0.0);
                 layer.set_outline_color(Color::Rgb(Rgb::new(
                     203.0 / 255.0,
                     213.0 / 255.0,
@@ -472,7 +499,7 @@ fn draw_running_header_footer(
                         let target_w = content_width.min(180.0);
                         let target_h = (target_w * aspect).min(24.0);
                         let img_x = left_margin + (content_width - target_w) / 2.0;
-                        let img_y = 5.0;
+                        let img_y = footer_distance;
                         draw_image_on_layer(layer, &dyn_img, img_x, img_y, target_w, target_h);
                     }
                     drew_footer_image = true;
@@ -495,7 +522,7 @@ fn draw_running_header_footer(
                     None,
                 )));
 
-                let footer_y = 10.5;
+                let footer_y = footer_distance;
                 if !left_text.is_empty() {
                     layer.use_text(&left_text, 8.5, Mm(left_margin), Mm(footer_y), font_reg);
                 }

@@ -1,4 +1,4 @@
-use crate::ast::{Document, ElementNode, Node, PageStyle};
+use crate::ast::{Document, ElementNode, Length, Node, PageStyle, Unit};
 use base64::Engine;
 use std::collections::HashMap;
 use std::io::{Cursor, Write};
@@ -216,8 +216,7 @@ fn generate_header_xml(doc: &Document) -> String {
     if is_landscape {
         std::mem::swap(&mut w, &mut _h);
     }
-    let margin_mm = doc.props.paper.margin.val;
-    let margin_dxa = (margin_mm * 56.6929).round() as u32;
+    let margin_dxa = length_to_dxa(&doc.props.paper.margin);
     let tab_pos = w.saturating_sub(margin_dxa * 2);
 
     format!(
@@ -356,8 +355,17 @@ fn generate_document_xml(doc: &Document, images: &HashMap<String, ImageEntry>) -
     };
 
     // Dynamic margin in dxa (1mm ≈ 56.7 dxa)
-    let margin_mm = doc.props.paper.margin.val;
-    let margin_dxa = (margin_mm * 56.6929).round() as u32;
+    let margin_dxa = length_to_dxa(&doc.props.paper.margin);
+    // Word stores header/footer distances independently of body margins. Keep
+    // explicit imported distances; otherwise use the same conservative value
+    // for both so neither side receives an invented, asymmetric offset.
+    let default_running_distance = (margin_dxa / 2).clamp(360, 720);
+    let header_dxa = doc.props.paper.header_distance.as_ref()
+        .map(length_to_dxa)
+        .unwrap_or(default_running_distance);
+    let footer_dxa = doc.props.paper.footer_distance.as_ref()
+        .map(length_to_dxa)
+        .unwrap_or(default_running_distance);
 
     format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -369,12 +377,25 @@ fn generate_document_xml(doc: &Document, images: &HashMap<String, ImageEntry>) -
       <w:headerReference w:type="default" r:id="rIdH1"/>
       <w:footerReference w:type="default" r:id="rIdF1"/>
       <w:pgSz w:w="{}" w:h="{}"{}/>
-      <w:pgMar w:top="{}" w:right="{}" w:bottom="{}" w:left="{}" w:header="720" w:footer="720"/>
+      <w:pgMar w:top="{}" w:right="{}" w:bottom="{}" w:left="{}" w:header="{}" w:footer="{}"/>
     </w:sectPr>
   </w:body>
 </w:document>"#,
-        body_xml, w, h, orient_attr, margin_dxa, margin_dxa, margin_dxa, margin_dxa
+        body_xml, w, h, orient_attr, margin_dxa, margin_dxa, margin_dxa, margin_dxa, header_dxa, footer_dxa
     )
+}
+
+fn length_to_dxa(length: &Length) -> u32 {
+    let dxa_per_unit = match length.unit {
+        Unit::Mm => 1440.0 / 25.4,
+        Unit::Cm => 1440.0 / 2.54,
+        Unit::Inch => 1440.0,
+        Unit::Pt => 20.0,
+        Unit::Px => 15.0,
+        Unit::Em => 240.0,
+        Unit::Percent => 0.0,
+    };
+    (length.val.max(0.0) * dxa_per_unit).round() as u32
 }
 
 fn get_p_align(el: &ElementNode) -> Option<&'static str> {

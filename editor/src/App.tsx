@@ -19,6 +19,7 @@ import {
   AlertTriangle,
   Printer,
   Image as ImageIcon,
+  MousePointerClick,
 } from 'lucide-react';
 import { parseDdlClient } from './parserClient';
 import { DocumentRenderer } from './DocumentRenderer';
@@ -239,6 +240,62 @@ export function App() {
     }
     compileProject(nextFiles);
   };
+
+  // Focus and jump to specific line in Monaco editor when double-clicked in preview
+  const handleNavigateToLine = useCallback((line: number) => {
+    if (!line || line < 1) return;
+
+    // 1. Ensure the main DXML file is active in Monaco
+    const mainDocFile = files.find(f => f.name.endsWith('.dxml') || f.name.endsWith('.xml')) || files[0];
+    if (mainDocFile && activeFileId !== mainDocFile.id) {
+      setActiveFileId(mainDocFile.id);
+    }
+
+    // 2. Clear text selection in preview so the editor caret is cleanly prioritized
+    window.getSelection()?.removeAllRanges();
+
+    // 3. Jump to the line in Monaco editor
+    requestAnimationFrame(() => {
+      setTimeout(() => {
+        if (!editorRef.current) return;
+        const editor = editorRef.current;
+        const model = editor.getModel();
+        if (!model) return;
+
+        const totalLines = model.getLineCount();
+        const targetLine = Math.min(Math.max(1, line), totalLines);
+        const firstCol = model.getLineFirstNonWhitespaceColumn(targetLine) || 1;
+
+        // Reveal line centered in editor viewport
+        editor.revealLineInCenter(targetLine);
+
+        // Move cursor/caret to first non-whitespace column on target line
+        editor.setPosition({ lineNumber: targetLine, column: firstCol });
+
+        // Set focus to the editor
+        editor.focus();
+
+        // Flash visual highlight on target line
+        if (monaco) {
+          const decorations = editor.deltaDecorations([], [
+            {
+              range: new monaco.Range(targetLine, 1, targetLine, model.getLineMaxColumn(targetLine)),
+              options: {
+                isWholeLine: true,
+                className: 'monaco-line-flash-highlight',
+              },
+            },
+          ]);
+
+          setTimeout(() => {
+            if (editorRef.current) {
+              editorRef.current.deltaDecorations(decorations, []);
+            }
+          }, 1200);
+        }
+      }, 40);
+    });
+  }, [files, activeFileId, monaco]);
 
   // Insert image at cursor into Monaco editor
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -762,15 +819,30 @@ export function App() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                   <Eye size={13} /> Live Paged Canvas ({parsedDoc?.props?.paper?.size || 'A4'} {parsedDoc?.props?.paper?.orientation || 'portrait'})
                 </div>
-                <span style={{ fontSize: '11px', color: '#94a3b8' }}>
-                  {files.length} project files (Ctrl + Scroll to zoom)
-                </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+                  <span style={{ fontSize: '11px', color: '#38bdf8', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <MousePointerClick size={12} /> Double-click preview to jump to code
+                  </span>
+                  <span style={{ fontSize: '11px', color: '#94a3b8' }}>
+                    (Ctrl + Scroll to zoom)
+                  </span>
+                </div>
               </div>
 
               {/* Virtual Paper Sheet Scroll Area */}
               <div
                 ref={previewContainerRef}
                 className="preview-container"
+                onDoubleClick={(e) => {
+                  const target = e.target as HTMLElement | null;
+                  if (!target) return;
+                  const lineEl = target.closest('[data-ddl-line]');
+                  const lineStr = lineEl?.getAttribute('data-ddl-line');
+                  const line = lineStr ? parseInt(lineStr, 10) : 0;
+                  if (line > 0) {
+                    handleNavigateToLine(line);
+                  }
+                }}
                 style={{
                   flex: 1,
                   minHeight: 0,
@@ -785,7 +857,12 @@ export function App() {
                   transformOrigin: 'top center',
                   transition: 'transform 0.08s ease-out',
                 }}>
-                  <DocumentRenderer doc={parsedDoc} error={errorInfo} assets={assets} />
+                  <DocumentRenderer
+                    doc={parsedDoc}
+                    error={errorInfo}
+                    assets={assets}
+                    onNavigateToLine={handleNavigateToLine}
+                  />
                 </div>
               </div>
             </div>

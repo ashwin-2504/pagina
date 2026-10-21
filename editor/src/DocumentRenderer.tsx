@@ -13,6 +13,7 @@ interface DocumentRendererProps {
   doc: ParsedDocument | null;
   error: ErrorInfo | null;
   assets?: Record<string, string>;
+  onNavigateToLine?: (line: number) => void;
 }
 
 const AssetContext = React.createContext<Record<string, string>>({});
@@ -58,6 +59,57 @@ function extractElementPlainText(node: DocNode): string {
     return (node as ElementNode).children.map(extractElementPlainText).join(' ');
   }
   return '';
+}
+
+function findLineByText(doc: ParsedDocument, text: string): number | null {
+  const clean = text.trim().slice(0, 40).replace(/\s+/g, ' ').toLowerCase();
+  if (!clean) return null;
+
+  function searchNodes(nodes: DocNode[]): number | null {
+    for (const node of nodes) {
+      if (node.type === 'Text') {
+        const contentClean = node.content.replace(/\s+/g, ' ').toLowerCase();
+        if (contentClean.includes(clean) || clean.includes(contentClean)) {
+          if (node.span?.line && node.span.line > 0) return node.span.line;
+        }
+      } else if (node.type === 'Element') {
+        const childMatch = searchNodes(node.children);
+        if (childMatch) return childMatch;
+        const plain = extractElementPlainText(node).replace(/\s+/g, ' ').toLowerCase();
+        if (plain.includes(clean) && node.span?.line && node.span.line > 0) {
+          return node.span.line;
+        }
+      } else if (node.type === 'Section') {
+        const childMatch = searchNodes(node.children);
+        if (childMatch) return childMatch;
+      }
+    }
+    return null;
+  }
+
+  const bodyMatch = searchNodes(doc.body.children);
+  if (bodyMatch) return bodyMatch;
+
+  for (const style of Object.values(doc.props.page_styles || {})) {
+    if (style.running_header) {
+      const match = searchNodes([
+        ...(style.running_header.left || []),
+        ...(style.running_header.center || []),
+        ...(style.running_header.right || []),
+      ]);
+      if (match) return match;
+    }
+    if (style.running_footer) {
+      const match = searchNodes([
+        ...(style.running_footer.left || []),
+        ...(style.running_footer.center || []),
+        ...(style.running_footer.right || []),
+      ]);
+      if (match) return match;
+    }
+  }
+
+  return null;
 }
 
 function estimateNodeHeight(node: DocNode): number {
@@ -162,7 +214,35 @@ function splitLargeBlocks(nodes: DocNode[]): DocNode[] {
   return result;
 }
 
-export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error, assets = {} }) => {
+export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error, assets = {}, onNavigateToLine }) => {
+  const handleDoubleClick = (e: React.MouseEvent) => {
+    if (!onNavigateToLine) return;
+    const target = e.target as HTMLElement | null;
+    if (!target) return;
+
+    // 1. Closest element with data-ddl-line
+    const lineEl = target.closest('[data-ddl-line]');
+    if (lineEl) {
+      const lineStr = lineEl.getAttribute('data-ddl-line');
+      const line = lineStr ? parseInt(lineStr, 10) : 0;
+      if (line > 0) {
+        window.getSelection()?.removeAllRanges();
+        onNavigateToLine(line);
+        return;
+      }
+    }
+
+    // 2. Text search fallback
+    const sel = window.getSelection()?.toString().trim();
+    const rawText = sel || target.innerText?.trim() || target.textContent?.trim();
+    if (rawText && doc) {
+      const matched = findLineByText(doc, rawText);
+      if (matched && matched > 0) {
+        window.getSelection()?.removeAllRanges();
+        onNavigateToLine(matched);
+      }
+    }
+  };
   if (error) {
     return (
       <div style={{
@@ -243,6 +323,11 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error, 
   const paperSize = doc.props?.paper?.size || 'A4';
   const orientation = doc.props?.paper?.orientation || 'portrait';
   const marginMm = doc.props?.paper?.margin?.val ?? 20;
+  // OpenXML treats running-header/footer distances separately from body
+  // margins. When absent, use one symmetric fallback for both sides.
+  const defaultRunningDistanceMm = Math.min(marginMm / 2, 12.7);
+  const headerDistanceMm = doc.props?.paper?.header_distance?.val ?? defaultRunningDistanceMm;
+  const footerDistanceMm = doc.props?.paper?.footer_distance?.val ?? defaultRunningDistanceMm;
 
   const isLandscape = orientation === 'landscape';
   const isLetter = paperSize.toUpperCase() === 'LETTER';
@@ -354,6 +439,7 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error, 
                        hasImageNode(pageStyle.running_header.right);
         headerHeightPx = (hasImg ? 38 : 14) * pxPerMm;
       }
+      const headerGapPx = headerHeightPx > 0 ? (headerHeightPx > 20 * pxPerMm ? 3 : 8) * pxPerMm : 0;
 
       let footerHeightPx = 0;
       if (pageStyle?.running_footer) {
@@ -364,9 +450,19 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error, 
           footerHeightPx = (hasImg ? 28 : 14) * pxPerMm;
         }
       }
+      const footerGapPx = footerHeightPx > 0 ? 3 * pxPerMm : 0;
 
-      // Safety buffer to ensure text never pushes over physical page boundaries
-      const availableHeightPx = Math.max(200, pageHeightPx - topMarginPx - bottomMarginPx - headerHeightPx - footerHeightPx - 30);
+      // Headers and footers each receive their own region measured from the
+      // physical page edge. Neither participates in the body flow, so the
+      // same document margin applies to both sides of the page.
+      const reservedTopPx = Math.max(topMarginPx, headerDistanceMm * pxPerMm + headerHeightPx + headerGapPx);
+      const reservedBottomPx = hasFullBleedFooter
+        ? bottomMarginPx
+        : Math.max(bottomMarginPx, footerDistanceMm * pxPerMm + footerHeightPx + footerGapPx);
+      const availableHeightPx = Math.max(
+        200,
+        pageHeightPx - reservedTopPx - reservedBottomPx,
+      );
 
       let curPageNodes: DocNode[] = [];
       let curH = 0;
@@ -419,7 +515,7 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error, 
     }
 
     return result;
-  }, [sectionsWithSplitBlocks, measuredHeights, heightMm, widthMm, marginMm, doc.props?.page_styles]);
+  }, [sectionsWithSplitBlocks, measuredHeights, heightMm, widthMm, marginMm, headerDistanceMm, footerDistanceMm, doc.props?.page_styles]);
 
   return (
     <AssetContext.Provider value={assets}>
@@ -450,13 +546,17 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error, 
           }
         }
       `}</style>
-      <div style={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '40px',
-        alignItems: 'center',
-        paddingBottom: '60px',
-      }}>
+      <div
+        onDoubleClick={handleDoubleClick}
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '40px',
+          alignItems: 'center',
+          paddingBottom: '60px',
+          userSelect: 'text',
+        }}
+      >
         {pages.map((page, pageIdx) => {
           const pageStyle: PageStyle | undefined = doc.props.page_styles[page.pageStyleName];
           const hasFullBleedFooter = pageStyle?.running_footer && (
@@ -464,11 +564,31 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error, 
             hasFullBleedImage(pageStyle.running_footer.left) ||
             hasFullBleedImage(pageStyle.running_footer.right)
           );
+          const headerHasImage = Boolean(pageStyle?.running_header && (
+            hasImageNode(pageStyle.running_header.center) ||
+            hasImageNode(pageStyle.running_header.left) ||
+            hasImageNode(pageStyle.running_header.right)
+          ));
+          const footerHasImage = Boolean(pageStyle?.running_footer && (
+            hasImageNode(pageStyle.running_footer.center) ||
+            hasImageNode(pageStyle.running_footer.left) ||
+            hasImageNode(pageStyle.running_footer.right)
+          ));
+          const headerHeightMm = pageStyle?.running_header ? (headerHasImage ? 38 : 14) : 0;
+          const footerHeightMm = pageStyle?.running_footer && !hasFullBleedFooter ? (footerHasImage ? 28 : 14) : 0;
+          const headerGapMm = headerHeightMm > 0 ? (headerHasImage ? 3 : 8) : 0;
+          const footerGapMm = footerHeightMm > 0 ? 3 : 0;
+          const contentTopMm = Math.max(marginMm, headerDistanceMm + headerHeightMm + headerGapMm);
+          const contentBottomMm = hasFullBleedFooter
+            ? 36
+            : Math.max(marginMm, footerDistanceMm + footerHeightMm + footerGapMm);
           return (
             <div key={pageIdx} className="page-wrapper" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
               {/* Page Indicator Header */}
               <div
                 className="page-header-indicator"
+                data-ddl-line={doc.props.paper_line || 3}
+                title="Double-click to go to paper setup in editor"
                 style={{
                   display: 'flex',
                   justifyContent: 'space-between',
@@ -482,6 +602,7 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error, 
                   marginBottom: '10px',
                   padding: '0 4px',
                   userSelect: 'none',
+                  cursor: 'pointer',
                 }}
               >
                 <span>Page {page.pageNum} of {pages.length}</span>
@@ -492,6 +613,7 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error, 
               <div
                 className="ddl-paper"
                 data-page-number={page.pageNum}
+                data-ddl-line={page.nodes[0]?.span?.line || 1}
                 style={{
                   width: `${widthMm}mm`,
                   height: `${heightMm}mm`,
@@ -499,8 +621,7 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error, 
                   maxHeight: `${heightMm}mm`,
                   backgroundColor: '#ffffff',
                   boxShadow: '0 8px 30px rgba(0, 0, 0, 0.28)',
-                  padding: `${marginMm}mm`,
-                  paddingBottom: hasFullBleedFooter ? '36mm' : `${marginMm}mm`,
+                  padding: 0,
                   boxSizing: 'border-box',
                   position: 'relative',
                   overflow: 'hidden',
@@ -516,7 +637,10 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error, 
                 <PageContext.Provider value={{ pageNum: page.pageNum, totalPages: pages.length }}>
                   {/* Watermark */}
                   {pageStyle?.watermark && (
-                    <div style={{
+                    <div
+                      data-ddl-line={pageStyle.watermark.line || 4}
+                      title="Double-click to go to watermark in editor"
+                      style={{
                       position: 'absolute',
                       top: '50%',
                       left: '50%',
@@ -544,8 +668,13 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error, 
 
                     if (hasCenter && !hasLeft && !hasRight) {
                       return (
-                        <header className="running-header header-center-only" style={{
-                          width: '100%',
+                        <header className="running-header header-center-only" data-ddl-line={pageStyle.running_header.line} style={{
+                          position: 'absolute',
+                          top: `${headerDistanceMm}mm`,
+                          left: `${marginMm}mm`,
+                          right: `${marginMm}mm`,
+                          zIndex: 2,
+                          width: 'auto',
                           textAlign: 'center',
                           display: 'flex',
                           flexDirection: 'column',
@@ -553,7 +682,7 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error, 
                           justifyContent: 'center',
                           borderBottom: hasImg ? 'none' : '1px solid #e2e8f0',
                           paddingBottom: hasImg ? '0' : '3mm',
-                          marginBottom: hasImg ? '3mm' : '8mm',
+                          marginBottom: 0,
                           fontSize: '9pt',
                           userSelect: 'none',
                         }}>
@@ -565,13 +694,18 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error, 
                     }
 
                     return (
-                      <header className="running-header" style={{
+                      <header className="running-header" data-ddl-line={pageStyle.running_header.line} style={{
+                        position: 'absolute',
+                        top: `${headerDistanceMm}mm`,
+                        left: `${marginMm}mm`,
+                        right: `${marginMm}mm`,
+                        zIndex: 2,
                         display: 'flex',
                         justifyContent: 'space-between',
                         alignItems: 'center',
                         borderBottom: hasImg ? 'none' : '1px solid #e2e8f0',
                         paddingBottom: hasImg ? '0' : '3mm',
-                        marginBottom: hasImg ? '4mm' : '8mm',
+                        marginBottom: 0,
                         fontSize: '9pt',
                         color: '#64748b',
                         userSelect: 'none',
@@ -584,7 +718,17 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error, 
                   })()}
 
                   {/* Page Content Body */}
-                  <div style={{ position: 'relative', zIndex: 1, flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                  <div style={{
+                    position: 'absolute',
+                    top: `${contentTopMm}mm`,
+                    right: `${marginMm}mm`,
+                    bottom: `${contentBottomMm}mm`,
+                    left: `${marginMm}mm`,
+                    zIndex: 1,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    overflow: 'hidden',
+                  }}>
                     <RenderChildren nodes={page.nodes} />
                   </div>
 
@@ -597,7 +741,7 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error, 
                           ? pageStyle.running_footer.left
                           : pageStyle.running_footer.right);
                       return (
-                        <footer className="running-footer full-bleed" style={{
+                        <footer className="running-footer full-bleed" data-ddl-line={pageStyle.running_footer.line} style={{
                           position: 'absolute',
                           bottom: 0,
                           left: 0,
@@ -614,8 +758,13 @@ export const DocumentRenderer: React.FC<DocumentRendererProps> = ({ doc, error, 
                                    hasImageNode(pageStyle.running_footer.left) ||
                                    hasImageNode(pageStyle.running_footer.right);
                     return (
-                      <footer className="running-footer" style={{
-                        marginTop: 'auto',
+                      <footer className="running-footer" data-ddl-line={pageStyle.running_footer.line} style={{
+                        position: 'absolute',
+                        right: `${marginMm}mm`,
+                        bottom: `${footerDistanceMm}mm`,
+                        left: `${marginMm}mm`,
+                        zIndex: 2,
+                        marginTop: 0,
                         borderTop: hasImg ? 'none' : '1px solid #e2e8f0',
                         paddingTop: hasImg ? '0' : '3mm',
                         display: 'flex',
@@ -703,8 +852,9 @@ export const RenderNode: React.FC<{ node: DocNode }> = ({ node }) => {
 };
 
 const RenderElement: React.FC<{ el: ElementNode }> = ({ el }) => {
-  const { tag, attributes, classes, inline_styles, children } = el;
+  const { tag, attributes, classes, inline_styles, children, span } = el;
   const tagLower = tag.toLowerCase();
+  const line = span?.line || (attributes && attributes['data-ddl-line'] ? parseInt(attributes['data-ddl-line'], 10) : undefined);
 
   const styleObj: React.CSSProperties = {};
   for (const [k, v] of Object.entries(inline_styles || {})) {
@@ -729,6 +879,7 @@ const RenderElement: React.FC<{ el: ElementNode }> = ({ el }) => {
     return (
       <hr
         className={className}
+        data-ddl-line={line}
         style={{
           border: 'none',
           borderBottom: '1px solid #cbd5e1',
@@ -749,6 +900,7 @@ const RenderElement: React.FC<{ el: ElementNode }> = ({ el }) => {
         src={resolvedSrc}
         alt={attributes['alt'] || ''}
         className={className}
+        data-ddl-line={line}
         style={{
           maxWidth: '100%',
           display: 'block',
@@ -835,12 +987,12 @@ const RenderElement: React.FC<{ el: ElementNode }> = ({ el }) => {
 
   if (tagLower === 'page-number') {
     const { pageNum } = React.useContext(PageContext);
-    return <span className={className} style={styleObj}>{pageNum}</span>;
+    return <span className={className} data-ddl-line={line} style={styleObj}>{pageNum}</span>;
   }
 
   if (tagLower === 'total-pages') {
     const { totalPages } = React.useContext(PageContext);
-    return <span className={className} style={styleObj}>{totalPages}</span>;
+    return <span className={className} data-ddl-line={line} style={styleObj}>{totalPages}</span>;
   }
 
   if (tagLower === 'callout') {
@@ -1032,6 +1184,7 @@ const RenderElement: React.FC<{ el: ElementNode }> = ({ el }) => {
     HtmlTag,
     {
       className,
+      'data-ddl-line': line,
       style: Object.keys(styleObj).length > 0 ? styleObj : undefined,
       ...attributes,
     },

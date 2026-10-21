@@ -294,6 +294,12 @@ impl<'a> Parser<'a> {
             if let Some(margin) = attrs.get("margin") {
                 config.margin = parse_length(margin);
             }
+            if let Some(distance) = attrs.get("header-distance") {
+                config.header_distance = Some(parse_length(distance));
+            }
+            if let Some(distance) = attrs.get("footer-distance") {
+                config.footer_distance = Some(parse_length(distance));
+            }
         }
         config
     }
